@@ -28,6 +28,8 @@ export type Capabilities = {
   kws?: boolean
   /** Voice models the bridge still needs downloaded. */
   modelsMissing?: string[]
+  /** Who JARVIS is talking to (from VAS settings). */
+  user?: { name?: string }
 }
 
 /** Browser-only until the probe says otherwise. Safe default: the app works. */
@@ -68,6 +70,7 @@ export async function probeCapabilities(): Promise<Capabilities> {
         sttEngine?: string | null
         kws?: boolean
         modelsMissing?: string[]
+        user?: { name?: string }
       }
       current = {
         stt: Boolean(h.stt),
@@ -75,6 +78,7 @@ export async function probeCapabilities(): Promise<Capabilities> {
         sttEngine: h.sttEngine ?? null,
         kws: Boolean(h.kws),
         modelsMissing: h.modelsMissing ?? [],
+        user: h.user ?? {},
       }
     }
   } catch {

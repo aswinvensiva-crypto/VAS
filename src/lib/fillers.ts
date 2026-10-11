@@ -1,3 +1,5 @@
+import { caps } from './capabilities'
+
 /**
  * Filler speech.
  *
@@ -5,47 +7,39 @@
  * JARVIS says something the instant work starts — then goes quiet until he has
  * an answer. One acknowledgement, no progress chatter.
  *
- * The phrasing follows the character's actual grammar rather than generic
- * assistant-speak, which matters more than it sounds:
- *
- *   - Working lines are subjectless present participles: "Compiling.",
- *     "Cross-referencing." Not "I'm now checking" and never "let me".
- *   - There is no snap-to compliance formula. "Right away" and "At once" are
- *     not in his vocabulary; acknowledgement is deferential, not eager.
- *   - No filler words, no enthusiasm, no apology, no exclamation marks.
- *   - "Sir" fronted means urgency; final means routine. These are all routine,
- *     so it goes at the end, and only sometimes.
+ * The voice is the one the user picked for VAS's JARVIS: friendly and
+ * casual — short, warm, everyday words, the way a capable friend answers.
+ * Still no "let me" narration and no exclamation marks: a filler is a beat of
+ * reassurance, not a performance.
  */
 
 /** Said as soon as the first tool fires, before any answer exists. */
 const WORKING = [
-  'Working on it, sir.',
-  'Compiling.',
-  'Retrieving.',
-  'Accessing the archive.',
-  'Cross-referencing.',
-  'Running the query now.',
-  'Searching.',
-  'Under way.',
+  'On it.',
+  'One sec.',
+  'Looking now.',
+  'Give me a moment.',
+  'Checking.',
+  'Pulling that up.',
+  'Working on it.',
 ]
 
 /** Acknowledging an order where no tool is involved. */
 const ACKNOWLEDGE = [
-  'As you wish, sir.',
-  'Very good, sir.',
-  'Certainly.',
-  'Understood.',
-  'Consider it done.',
-  'Directly, sir.',
+  'Sure.',
+  'Okay.',
+  'Got it.',
+  'Will do.',
+  'On it.',
 ]
 
 /** Answering to his name, before the user has said what they want. */
 const ATTENTION = [
-  'Yes, sir?',
-  'Sir?',
-  'At your service, sir.',
-  'Standing by.',
-  'Awake, sir.',
+  'Yeah?',
+  "I'm here.",
+  "What's up?",
+  'Listening.',
+  'Hey.',
 ]
 
 /**
@@ -65,7 +59,12 @@ function makePicker(pool: string[]) {
 
 export const working = makePicker(WORKING)
 export const acknowledge = makePicker(ACKNOWLEDGE)
-export const attention = makePicker(ATTENTION)
+const pickAttention = makePicker(ATTENTION)
+/** Now and then by name — "Hey Aswin?" — but not every time, or it grates. */
+export const attention = () => {
+  const name = caps().user?.name
+  return name && Math.random() < 0.25 ? `Hey ${name}?` : pickAttention()
+}
 
 /**
  * Naming the task is warmer than a generic acknowledgement and shows the
@@ -94,6 +93,11 @@ type Rule = {
 const FOOTAGE = ['Assembling the footage.', 'Rendering the sequence.']
 
 const BY_TOOL: Rule[] = [
+  // JARVIS's own actions on this PC (apps, sites), local or through Claude.
+  { server: /jarvis_neurons/, tool: /open_app|focus_app/, lines: ['Opening it.', 'Pulling it up.'] },
+  { server: /jarvis_neurons/, tool: /close_app/, lines: ['Closing it.'] },
+  { server: /jarvis_neurons/, tool: /chrome_open|chrome_search/, lines: ['Opening Chrome.', 'Looking it up.'] },
+  { server: /jarvis_neurons/, tool: /chrome_read_tab/, lines: ['Reading the page.'] },
   // Video sits above image because higgsfield and palmier both do either, so
   // the verb in the tool name is the only thing separating them — a rule on the
   // server alone would send every generate_video to "Rendering."
@@ -129,7 +133,7 @@ const BY_TOOL: Rule[] = [
   {
     server: /elevenlabs|openai-tts/,
     tool: /speech|\bvoice\b|\btts\b|text_to_sound/,
-    lines: ['Synthesising.', 'Working on it, sir.'],
+    lines: ['Making the audio.', 'Working on it.'],
   },
   {
     server: /spotify|sonos/,
@@ -139,7 +143,7 @@ const BY_TOOL: Rule[] = [
   {
     server: /^home|homeassistant|\bhue\b|\bhass\b/,
     tool: /\blights?\b|thermostat|\bdimmer\b/,
-    lines: ['Adjusting it now.', 'Seeing to it, sir.'],
+    lines: ['Adjusting it now.', 'On it.'],
   },
   {
     server: /github|linear|jira|sentry/,
