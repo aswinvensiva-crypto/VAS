@@ -7,7 +7,7 @@
  * keys off `desktop` being non-null, so the same build still runs in a plain
  * browser tab for development.
  */
-export type TrayCommand = { cmd: 'listening'; value: boolean }
+export type TrayCommand = { cmd: 'listening'; value: boolean } | { cmd: 'enroll' }
 
 export interface VasDesktop {
   bridge: { ws: string; http: string; token: string }
@@ -19,6 +19,8 @@ export interface VasDesktop {
   onHotkey(fn: () => void): () => void
   onTray(fn: (command: TrayCommand) => void): () => void
   setListening(on: boolean): void
+  /** Bring the VAS window to the front. */
+  show(): void
   quit(): void
 }
 

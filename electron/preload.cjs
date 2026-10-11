@@ -28,4 +28,5 @@ contextBridge.exposeInMainWorld('vas', {
   onTray: (fn) => subscribe('vas:tray', fn),
   setListening: (on) => ipcRenderer.send('vas:listening', Boolean(on)),
   quit: () => ipcRenderer.send('vas:quit'),
+  show: () => ipcRenderer.send('vas:show'),
 })

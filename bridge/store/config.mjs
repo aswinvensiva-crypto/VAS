@@ -51,8 +51,10 @@ export const ConfigSchema = z.object({
     .prefault({}),
   owner: z
     .object({
-      /** Whose voice is required: for actions only, for everything, or off. */
-      require: z.enum(['actions', 'all', 'off']).default('actions'),
+      /** Once a voice is enrolled: ignore everyone else entirely ('all', the
+       *  default — what "only respond to my voice" means), only for approving
+       *  actions ('actions'), or not at all ('off'). */
+      require: z.enum(['actions', 'all', 'off']).default('all'),
     })
     .prefault({}),
 })

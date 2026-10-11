@@ -1929,3 +1929,41 @@ kbd {
 }
 .confirm-actions button:first-child { background: rgba(255, 201, 51, 0.16); }
 .confirm-actions button:hover { background: rgba(255, 201, 51, 0.3); }
+
+/* "Learn my voice": one sentence at a time, a level meter so you can see it
+   hearing you, and a live verdict once the voiceprint is saved. */
+.enroll {
+  position: fixed;
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
+  z-index: 50;
+  width: min(600px, calc(100vw - 32px));
+  padding: 22px 24px;
+  border: 1px solid rgba(92, 242, 239, 0.45);
+  background: rgba(2, 10, 14, 0.92);
+  box-shadow: 0 0 30px rgba(92, 242, 239, 0.15);
+  color: #cfeff0;
+  font: 500 15px/1.5 ui-monospace, monospace;
+  text-align: center;
+}
+.enroll-title { font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; opacity: 0.7; }
+.enroll-count { margin-top: 12px; font-size: 12px; opacity: 0.6; }
+.enroll-phrase { margin: 10px 0 4px; font-size: 20px; color: #f2ffff; }
+.enroll-result { margin: 12px 0 4px; font-size: 18px; }
+.enroll-owner { color: #3ef2a8; }
+.enroll-other { color: #ff7a6b; }
+.enroll-unknown { color: #ffc933; }
+.enroll-score { opacity: 0.6; font-size: 13px; }
+.enroll-meter { margin: 14px auto 8px; height: 4px; width: 60%; background: rgba(92, 242, 239, 0.15); }
+.enroll-meter > div { height: 100%; background: #5cf2ef; transition: width 80ms linear; }
+.enroll-note { font-size: 12px; opacity: 0.75; min-height: 18px; }
+.enroll-actions { margin-top: 14px; }
+.enroll-actions button {
+  pointer-events: auto;
+  cursor: pointer;
+  padding: 6px 18px;
+  border: 1px solid rgba(92, 242, 239, 0.5);
+  background: transparent;
+  color: #cfeff0;
+  font: inherit;
+}

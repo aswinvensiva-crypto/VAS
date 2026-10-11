@@ -42,6 +42,7 @@ export const DEFAULT_TIERS = {
   'jarvis.quit': 'confirm',
   'jarvis.unlock': 'confirm',
   'camera.hidden': 'confirm',
+  'voice.forget': 'confirm',
 }
 
 const PermissionsSchema = z.object({
@@ -92,8 +93,10 @@ export function parseConfirm(text) {
  *        the bridge's ask-the-face round trip (server.mjs)
  * @param {(id: string) => void} [deps.cancel] tell the face a question is moot
  * @param {(entry: object) => void} [deps.audit]
- * @param {() => { verdict: 'owner'|'other'|'unknown'|'unenrolled' }} [deps.owner]
- *        whose voice the most recent command was in (speaker check, step 10)
+ * @param {() => { verdict: 'owner'|'other'|'unknown'|'unenrolled', ownerRecently?: boolean }} [deps.owner]
+ *        whose voice the latest segment was in, and whether the owner spoke in
+ *        the last minute (so a short "yes" too brief to judge still counts
+ *        right after the owner gave the command)
  */
 export function createGate({ ask, cancel = () => {}, audit = defaultAudit, owner = () => ({ verdict: 'unenrolled' }) }) {
   let queue = Promise.resolve()
@@ -177,7 +180,7 @@ export function createGate({ ask, cancel = () => {}, audit = defaultAudit, owner
       source === 'click' ||
       who === 'owner' ||
       who === 'unenrolled' ||
-      (who === 'unknown' && owner().verdict === 'owner')
+      (who === 'unknown' && owner().ownerRecently === true)
     const clickOk = source !== 'click' || permissions.allowClickConfirm
     const allowed = answer === 'yes' && ownerOk && clickOk
 

@@ -175,6 +175,7 @@ ipcMain.on('vas:listening', (_event, on) => {
   tray?.refresh()
 })
 ipcMain.on('vas:quit', () => void quit())
+ipcMain.on('vas:show', () => showWindow())
 
 app.on('second-instance', showWindow)
 app.on('before-quit', () => {
@@ -213,6 +214,10 @@ app.whenReady().then(async () => {
     onSetListening: (on) => {
       listening = on
       win?.webContents.send('vas:tray', { cmd: 'listening', value: on })
+    },
+    onEnroll: () => {
+      showWindow()
+      win?.webContents.send('vas:tray', { cmd: 'enroll' })
     },
     onRestartBrain: () => bridge.restart(),
     onQuit: () => void quit(),

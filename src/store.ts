@@ -230,6 +230,8 @@ type State = {
   error: string | null
   /** A pending "shall I?" from the permission gate, with how to answer it. */
   confirm: ConfirmPrompt | null
+  /** The "Learn my voice" screen is open; the voice loop stays deaf. */
+  enrolling: boolean
   connected: string[]
   /** Name of the speech-synthesis voice in use, shown in the HUD. */
   voice: string
@@ -269,6 +271,7 @@ type State = {
   setActiveTool: (t: string | null) => void
   setError: (e: string | null) => void
   setConfirm: (c: ConfirmPrompt | null) => void
+  setEnrolling: (on: boolean) => void
   setConnected: (c: string[]) => void
   pushTurn: (t: Turn) => void
   appendToLastTurn: (text: string) => void
@@ -290,6 +293,7 @@ export const useStore = create<State>((set) => ({
   activeTool: null,
   error: null,
   confirm: null,
+  enrolling: false,
   connected: [],
   voice: '',
   gestures: false,
@@ -365,6 +369,7 @@ export const useStore = create<State>((set) => ({
   setActiveTool: (activeTool) => set({ activeTool }),
   setError: (error) => set({ error }),
   setConfirm: (confirm) => set({ confirm }),
+  setEnrolling: (enrolling) => set({ enrolling }),
   setConnected: (connected) => set({ connected }),
   pushTurn: (turn) => set((s) => ({ turns: [...s.turns.slice(-40), turn] })),
   appendToLastTurn: (text) =>

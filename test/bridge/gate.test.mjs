@@ -99,11 +99,20 @@ test('clicks count unless switched off; deny tier and lockdown never ask', async
 
 test('only the owner\'s spoken yes counts once a voice is enrolled', async () => {
   const f = face({ text: 'yes', source: 'voice', owner: 'other' }, { text: 'yes', source: 'voice', owner: 'owner' })
-  const gate = gateMod.createGate({ ...f, owner: () => ({ verdict: 'owner' }) })
+  const gate = gateMod.createGate({ ...f, owner: () => ({ verdict: 'owner', ownerRecently: true }) })
   const stranger = await gate.check('app.close', { prompt: 'Close it?' })
   assert.equal(stranger.allowed, false)
   assert.match(stranger.reason, /Only your voice/)
   assert.equal((await gate.check('app.close', { prompt: 'Close it?' })).allowed, true)
+})
+
+test('a yes too short to judge counts only if the owner spoke just before', async () => {
+  const f = face({ text: 'yes', source: 'voice', owner: 'unknown' }, { text: 'yes', source: 'voice', owner: 'unknown' })
+  let recent = false
+  const gate = gateMod.createGate({ ...f, owner: () => ({ verdict: 'unknown', ownerRecently: recent }) })
+  assert.equal((await gate.check('app.close', { prompt: 'Close?' })).allowed, false)
+  recent = true
+  assert.equal((await gate.check('app.close', { prompt: 'Close?' })).allowed, true)
 })
 
 test('questions are asked one at a time', async () => {

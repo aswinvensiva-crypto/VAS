@@ -24,7 +24,7 @@ import { audit } from '../store/audit.mjs'
  * @param {object} deps.corrections
  * @param {(text: string, id: string|null) => void} deps.toClaude
  */
-export function createLocal({ send, ask, gate, brain, corrections, toClaude }) {
+export function createLocal({ send, ask, gate, brain, corrections, toClaude, onVoiceChange = () => {} }) {
   const memory = { lastReply: '', lastUser: null, previousUser: null }
   const log = []
   let current = null
@@ -59,6 +59,7 @@ export function createLocal({ send, ask, gate, brain, corrections, toClaude }) {
       send,
       say: (text) => !signal.aborted && send({ type: 'text', delta: `${text} `, ask: id }),
       afterTurn: (fn) => after.push(fn),
+      voiceChanged: onVoiceChange,
       /** Run one neuron by name, e.g. open_app handing a website to chrome_open. */
       async run(name, params) {
         const neuron = registry.get(name)

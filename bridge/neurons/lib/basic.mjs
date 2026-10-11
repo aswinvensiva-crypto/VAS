@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { loadPermissions, savePermissions } from '../../gate.mjs'
+import { forgetSpeaker, loadSpeaker } from '../../voice/speaker.mjs'
 
 /**
  * Small neurons that answer instantly and never need Claude.
@@ -96,5 +97,29 @@ export const kill_switch = {
         return { say: 'Unlocked.' }
       }
     }
+  },
+}
+
+/**
+ * "Learn my voice" opens the enrollment screen; "forget my voice" deletes the
+ * voiceprint (asking first — it switches off the check that keeps other
+ * people and the TV from giving JARVIS orders).
+ */
+export const voice_setup = {
+  name: 'voice_setup',
+  description: "Learn or forget the owner's voice.",
+  tier: 'free',
+  params: { mode: z.enum(['enroll', 'forget']) },
+  async run({ mode }, ctx) {
+    if (mode === 'enroll') {
+      ctx.send({ type: 'app', op: 'enroll' })
+      return { say: 'Sure — read each line on screen out loud.' }
+    }
+    if (!loadSpeaker()) return { say: "I haven't learned your voice yet." }
+    const ok = await ctx.gate.check('voice.forget', { prompt: 'Forget your voice? Anyone could talk to me again.' })
+    if (!ok.allowed) return { say: ok.reason }
+    forgetSpeaker()
+    ctx.voiceChanged()
+    return { say: "Done — I've forgotten your voice." }
   },
 }

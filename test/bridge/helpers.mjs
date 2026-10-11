@@ -59,13 +59,15 @@ export async function startBridge({ token = 'test-token-0123456789abcdef', env =
 
 /**
  * Speak `phrases` with a Windows SAPI voice into 16 kHz mono WAV files.
- * Returns { name: path } or null where speech synthesis is unavailable.
+ * `voice` picks among the installed English voices (0, 1, ...), so tests can
+ * have two different "people". Returns { name: path } or null where speech
+ * synthesis (or that voice) is unavailable.
  */
-export function synthesize(phrases) {
+export function synthesize(phrases, { voice = 0 } = {}) {
   if (process.platform !== 'win32') return null
   const dir = mkdtempSync(join(tmpdir(), 'vas-say-'))
   const spec = join(dir, 'spec.json')
-  writeFileSync(spec, JSON.stringify({ dir, phrases }))
+  writeFileSync(spec, JSON.stringify({ dir, phrases, voice }))
   const script = join(dir, 'say.ps1')
   writeFileSync(
     script,
@@ -73,6 +75,9 @@ export function synthesize(phrases) {
 Add-Type -AssemblyName System.Speech
 $spec = Get-Content -Raw -LiteralPath $args[0] | ConvertFrom-Json
 $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$voices = @($s.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Culture.Name -like 'en-*' })
+if ($spec.voice -ge $voices.Count) { exit 3 }
+$s.SelectVoice($voices[$spec.voice].VoiceInfo.Name)
 $fmt = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo(16000, [System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen, [System.Speech.AudioFormat.AudioChannel]::Mono)
 foreach ($p in $spec.phrases.PSObject.Properties) {
   $s.SetOutputToWaveFile((Join-Path $spec.dir ($p.Name + '.wav')), $fmt); $s.Speak($p.Value); $s.SetOutputToNull()

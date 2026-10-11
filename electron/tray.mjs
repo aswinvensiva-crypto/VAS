@@ -6,7 +6,7 @@ import { join } from 'node:path'
  * time. Clicking it shows or hides the window; the menu holds the few things
  * worth doing without opening it.
  */
-export function createTray({ iconPath, dataDir, isListening, onToggleWindow, onSetListening, onRestartBrain, onQuit }) {
+export function createTray({ iconPath, dataDir, isListening, onToggleWindow, onSetListening, onEnroll, onRestartBrain, onQuit }) {
   const tray = new Tray(nativeImage.createFromPath(iconPath))
   tray.setToolTip('VAS — say "Hey Jarvis" or press Ctrl+Alt+Space')
 
@@ -27,6 +27,7 @@ export function createTray({ iconPath, dataDir, isListening, onToggleWindow, onS
         checked: app.isPackaged && app.getLoginItemSettings().openAtLogin,
         click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked, args: ['--hidden'] }),
       },
+      { label: 'Learn my voice…', click: onEnroll },
       { type: 'separator' },
       { label: 'Open data folder', click: () => void shell.openPath(dataDir) },
       { label: 'Restart JARVIS', click: onRestartBrain },

@@ -80,6 +80,20 @@ synapses:
     neurons:
       - kill_switch: { mode: unlock }
 
+  - name: learn-voice
+    signals:
+      - order: { text: "learn my voice", matching-type: ordered-strict }
+      - order: { text: "enroll my voice", matching-type: ordered-strict }
+      - order: { text: "train my voice", matching-type: ordered-strict }
+    neurons:
+      - voice_setup: { mode: enroll }
+
+  - name: forget-voice
+    signals:
+      - order: { text: "forget my voice", matching-type: ordered-strict }
+    neurons:
+      - voice_setup: { mode: forget }
+
   # --- Windows apps --------------------------------------------------------------
   - name: open-app
     signals:

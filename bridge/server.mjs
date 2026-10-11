@@ -35,6 +35,8 @@ import { createVoiceEngine } from './voice/engine.mjs'
 import { handleSegment } from './voice/stt.mjs'
 import { parseWav } from './voice/wav.mjs'
 import { scribeTranscribe } from './voice/scribe.mjs'
+import { loadSpeaker } from './voice/speaker.mjs'
+import { createEnrollment } from './voice/enroll.mjs'
 import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
@@ -81,6 +83,25 @@ const VOICE = createVoiceEngine({ config: CONFIG })
  */
 const BRAIN = createBrain({ known: new Set(NEURONS.keys()) })
 const CORRECTIONS = await loadCorrections()
+
+/**
+ * "Only respond to my voice": the enrolled voiceprint (null until you enroll),
+ * and whose voice the latest segment was in — which the permission gate reads
+ * when it judges a spoken yes.
+ */
+let SPEAKER = loadSpeaker()
+const HEARD = { verdict: 'unknown', at: 0, ownerAt: 0 }
+const voiceCheck = () => {
+  if (!SPEAKER) return { verdict: 'unenrolled', ownerRecently: false }
+  const fresh = Date.now() - HEARD.at < 30_000
+  return { verdict: fresh ? HEARD.verdict : 'unknown', ownerRecently: Date.now() - HEARD.ownerAt < 60_000 }
+}
+const ENROLL = createEnrollment({
+  engine: VOICE,
+  onChange: () => {
+    SPEAKER = loadSpeaker()
+  },
+})
 
 function tokenOk(presented) {
   if (!TOKEN) return true
@@ -516,6 +537,7 @@ const handleRequest = async (req, res) => {
         stt: Boolean(sttEngine),
         sttEngine,
         kws: voice.kws,
+        speaker: { available: voice.speaker, enrolled: Boolean(SPEAKER), require: CONFIG.owner.require },
         modelsMissing: voice.missing,
         user: { name: CONFIG.userName },
       }),
@@ -775,8 +797,14 @@ const handleRequest = async (req, res) => {
         mode,
         engine: VOICE,
         config: CONFIG,
+        speaker: SPEAKER,
         scribe: key ? (buf) => scribeTranscribe(buf, 'audio/wav', key, CONFIG.stt.language) : null,
       })
+      if (out.owner) {
+        HEARD.verdict = out.owner.verdict
+        HEARD.at = Date.now()
+        if (out.owner.verdict === 'owner') HEARD.ownerAt = HEARD.at
+      }
       // Mishearings you have corrected before are fixed here, before anything
       // acts on the words. The raw transcript rides along for learning.
       if (out.text) {
@@ -788,6 +816,26 @@ const handleRequest = async (req, res) => {
     } catch (err) {
       console.error('[jarvis] transcription failed:', err)
       return json(500, { text: '', reason: 'transcription failed' })
+    }
+  }
+
+  if (pathname.startsWith('/voice/')) {
+    const chunks = []
+    let size = 0
+    for await (const chunk of req) {
+      chunks.push(chunk)
+      size += chunk.length
+      if (size > 25 * 1024 * 1024) return req.destroy()
+    }
+    try {
+      const out = await ENROLL(req, pathname, new URL(req.url, 'http://x').searchParams, Buffer.concat(chunks))
+      if (out) {
+        res.writeHead(out[0], { ...cors, 'content-type': 'application/json' })
+        return res.end(JSON.stringify(out[1]))
+      }
+    } catch (err) {
+      res.writeHead(err.status ?? 400, { ...cors, 'content-type': 'application/json' })
+      return res.end(JSON.stringify({ ok: false, reason: err.message }))
     }
   }
 
@@ -982,6 +1030,7 @@ wss.on('connection', (socket) => {
    */
   const gate = createGate({
     ask,
+    owner: voiceCheck,
     cancel: () => {
       for (const [id, slot] of waiting) {
         if (slot.kind !== 'confirm') continue
@@ -1018,6 +1067,9 @@ wss.on('connection', (socket) => {
     brain: BRAIN,
     corrections: CORRECTIONS,
     toClaude: deliverToClaude,
+    onVoiceChange: () => {
+      SPEAKER = loadSpeaker()
+    },
   })
 
   /**

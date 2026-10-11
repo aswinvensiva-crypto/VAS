@@ -4,6 +4,7 @@ import { Hud } from './ui/Hud'
 import { Boot } from './ui/Boot'
 import { Ignition } from './ui/Ignition'
 import { Diagnostics } from './ui/Diagnostics'
+import { Enroll } from './ui/Enroll'
 import { useStore } from './store'
 import { startVoice, type Voice, type VoiceMode } from './lib/voice'
 import { createSpeaker, cycleVoice, currentVoiceName, speakingNow } from './lib/tts'
@@ -235,6 +236,8 @@ export default function App() {
 
   /** What the voice loop should do with what it hears, derived from phase. */
   const mode = (): VoiceMode => {
+    // The enrollment screen has the microphone; nothing said there is a command.
+    if (store.getState().enrolling) return 'deaf'
     switch (store.getState().phase) {
       case 'offline':
       case 'boot':
@@ -466,6 +469,9 @@ export default function App() {
         desktop?.setListening(false)
       } else if (op === 'quit') {
         desktop?.quit()
+      } else if (op === 'enroll') {
+        desktop?.show()
+        store.getState().setEnrolling(true)
       }
     })
 
@@ -784,6 +790,7 @@ export default function App() {
       desktop?.onHotkey(manualTrigger),
       desktop?.onTray((c) => {
         if (c.cmd === 'listening') wakeListening.current = c.value
+        if (c.cmd === 'enroll') store.getState().setEnrolling(true)
       }),
     ]
     if (desktop) void powerOn()
@@ -809,6 +816,7 @@ export default function App() {
       <Boot />
       <Diagnostics />
       <Ignition onStart={() => void powerOn()} />
+      <Enroll />
     </>
   )
 }

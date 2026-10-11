@@ -22,7 +22,7 @@ test('a missing config is a full set of defaults', async () => {
   assert.equal(cfg.hotkey, 'Control+Alt+Space')
   assert.equal(cfg.stt.engine, 'auto')
   assert.equal(cfg.stt.model, 'whisper-base')
-  assert.equal(cfg.owner.require, 'actions')
+  assert.equal(cfg.owner.require, 'all')
   assert.equal(cfg.wake.keywords[0].name, 'HEY_JARVIS')
   assert.ok(cfg.userName.length > 0)
 })
