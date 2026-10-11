@@ -1,0 +1,11 @@
+node_modules/
+dist/
+release/
+out/
+coverage/
+.vite/
+public/mediapipe/
+models/
+*.log
+.env*
+!.env.example
