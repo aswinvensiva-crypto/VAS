@@ -193,11 +193,14 @@ const isDevPort = (port) =>
 
 /** The desktop app serves the face from its own privileged scheme. */
 const APP_ORIGIN = 'app://vas'
+/** An installed VAS has no dev server: only its own face may connect. */
+const APP_ONLY = process.env.JARVIS_APP_ONLY === '1'
 
 function originAllowed(origin) {
   if (!origin) return ALLOW_NO_ORIGIN
   if (origin.replace(/\/+$/, '') === APP_ORIGIN) return true
   if (EXTRA_ORIGINS.has(origin.replace(/\/+$/, ''))) return true
+  if (APP_ONLY) return false
   let url
   try {
     url = new URL(origin)
@@ -974,7 +977,7 @@ void chromeAvailable().then((ok) => {
 })
 
 console.log(
-  '[jarvis] accepting local dev origins' +
+  (APP_ONLY ? '[jarvis] accepting only the VAS window' : '[jarvis] accepting local dev origins') +
     (EXTRA_ORIGINS.size ? ` plus ${[...EXTRA_ORIGINS].join(', ')}` : '') +
     (ALLOW_NO_ORIGIN ? ' and clients that send no origin' : ''),
 )
@@ -1090,6 +1093,7 @@ wss.on('connection', (socket) => {
    * turn, so it knows what just happened on this PC.
    */
   function deliverToClaude(text, id) {
+    startSession()
     answering = id
     const message = localTurns.takeLog() + text
     if (deliver) {
@@ -1191,232 +1195,252 @@ wss.on('connection', (socket) => {
     if (!failed) sendTurn({ type: 'tool', name })
   }
 
-  const session = query({
-    prompt: userMessages(),
-    options: {
-      // Everything Claude Code has configured, plus the HUD as an in-process
-      // server. The HUD's handler closes over this socket, so a `display` call
-      // lands on screen directly — which is also why this object is built per
-      // connection rather than once.
-      mcpServers: {
-        ...MCP_SERVERS,
-        jarvis: displayServer(
-          (panel) => send({ type: 'panel', panel }),
-          (blade) => send({ type: 'blade', blade }),
-        ),
-        // The interface controls, on the same socket. A separate key because
-        // MCP tool names are `mcp__<key>__<tool>` and one key can only carry
-        // one server; the underscore in it is why decideTool and announceTool
-        // both name `jarvis_ui` explicitly.
-        jarvis_ui: uiServer((op, args) => send({ type: 'ui', op, args })),
-        // The user's own Chrome, over the extension's native-host socket. It
-        // holds no per-connection state, but it is built here with the rest so
-        // the write gate is read once, at the same point as everything else.
-        jarvis_chrome: chromeServer({ allowWrites: ALLOW_WRITES, gate }),
-        // The camera, which unlike everything else here has to ask and wait.
-        jarvis_eyes: visionServer(ask),
-        // Apps and sites through the catalog and the permission gate, for the
-        // requests no fixed order matches ("can you get WhatsApp up?").
-        jarvis_neurons: neuronsServer(() => localTurns.toolContext()),
-      },
-      // A plain system prompt, not the claude_code preset. The preset is
-      // tuned for a coding agent — verbose, file-oriented, and a large chunk
-      // of input tokens on every turn. Replacing it makes the persona stick,
-      // keeps answers short enough to speak, and cuts cost per turn.
-      systemPrompt: SYSTEM_PROMPT,
-      cwd: WORKSPACE,
-      // Built-in tools: search and planning only, unless --writes. Removing a
-      // tool from the model's context is stronger than refusing it in
-      // canUseTool, which the CLI does not consult for every call.
-      ...sessionTools({ allowWrites: ALLOW_WRITES }),
-      // Nothing written to ~/.claude/projects. A voice session routinely reads
-      // pages from signed-in sites — mail, banking, work dashboards — and the
-      // transcript of that has no reason to outlive the conversation.
-      persistSession: false,
-      // The SDK replaces the child's environment when this is set, so the
-      // parent's is carried over — minus the session token, which the agent
-      // never needs and must not be able to read back out.
-      env: {
-        ...Object.fromEntries(
-          Object.entries(process.env).filter(([k]) => k !== 'JARVIS_BRIDGE_TOKEN'),
-        ),
-        CLAUDE_AGENT_SDK_CLIENT_APP: 'vas/0.1',
-      },
-      // The packaged app points this at the claude.exe it unpacked from asar.
-      ...(process.env.JARVIS_CLAUDE_EXE
-        ? { pathToClaudeCodeExecutable: process.env.JARVIS_CLAUDE_EXE }
-        : {}),
-      // No filesystem settings at all. Left to its default the SDK loads
-      // ~/.claude/settings.json and settings.local.json exactly as the CLI
-      // does — which on a working machine means a bypassPermissions default
-      // and a pile of allow-rules for Bash. Allow-rules are matched before the
-      // permission callback, so decideTool below would never even be asked
-      // about the tools it most needs to refuse. Empty makes this bridge the
-      // only authority. It also stops the global CLAUDE.md riding along on
-      // every voice turn, carrying instructions written for a coding agent
-      // into a conversation that is meant to be two sentences long.
-      //
-      // The cost is that MCP servers stop being discovered too, which is why
-      // mcpServers above passes them in by hand.
-      settingSources: [],
-      // Stated explicitly, and it has to be.
-      //
-      // With no `model` here the SDK falls back to its own default, which on
-      // this machine resolved to claude-opus-4-8[1m] — not what src/config.ts
-      // declares for the browser-direct path, and not anything anyone chose.
-      // Normally your own `/model` preference would decide, but that lives in
-      // the settings files `settingSources: []` deliberately stops loading, so
-      // without this line nothing in the project has a say at all.
-      model: MODEL,
-      effort: EFFORT,
-      maxTurns: 24,
-      permissionMode: 'default',
-      // Without this the SDK only emits whole assistant messages, and JARVIS
-      // would sit silent until the entire answer was written. Partial events
-      // are what let speech start on the first finished sentence.
-      includePartialMessages: true,
-      // Signature is (toolName, input, options) and it must return a
-      // PermissionResult object. Returning a bare boolean silently denies
-      // everything, with the tool name arriving undefined.
-      //
-      // Worth knowing: this is a last gate, not the only one. Calls the CLI
-      // has already settled never arrive here — its own classifier waves
-      // through a `Bash: echo hello` without asking, and only reaches us for
-      // something with a consequence, like a `touch`. So a deny here is
-      // reliable; an absence of a call here is not proof nothing ran.
-      canUseTool: async (toolName) => {
-        const ok = decideTool(toolName)
-        console.log(`[jarvis] tool ${toolName} -> ${ok ? 'allow' : 'deny'}`)
-        return ok
-          ? { behavior: 'allow' }
-          : {
-              behavior: 'deny',
-              // Every word of this can end up spoken, so it carries no command
-              // to read out — the persona is forbidden from saying one aloud.
-              message:
-                'Blocked: JARVIS is running in read-only mode and cannot take' +
-                ' actions that change anything. Tell the user this action is' +
-                ' unavailable until they enable write access on the machine.',
-            }
-      },
-    },
-  })
+  /**
+   * Claude Code itself, started a moment after the face connects rather than
+   * the instant it does — or at once, if a question for Claude comes first.
+   *
+   * Starting it spawns claude.exe, and on Windows that one call blocks this
+   * whole process for 1.5–2.5 s while the 200 MB executable is mapped and
+   * scanned. Done in the connection handler it landed exactly on the face's
+   * boot: /health timed out, the first wake-word segments queued, and "what
+   * time is it" — answered locally in 2 ms — took two seconds. Deferred, the
+   * pause falls in the quiet after boot, and the session is still warm before
+   * anyone needs it.
+   */
+  let session = null
+  const PREWARM_MS = Number(process.env.JARVIS_PREWARM_MS ?? 2500)
+  const prewarm = setTimeout(() => startSession(), PREWARM_MS)
 
-  // Pump the session's output stream to the browser for as long as it lives.
-  ;(async () => {
-    try {
-      for await (const msg of session) {
-        if (process.env.JARVIS_DEBUG === '1') {
-          console.log('[msg]', msg.type, msg.event?.type ?? '')
-        }
-
-        switch (msg.type) {
-          // Raw Anthropic stream events, surfaced by includePartialMessages.
-          // This is the ONLY place spoken text arrives: there is no top-level
-          // text_delta message in the SDK union and the 'assistant' message
-          // carries no deltas either. Turn includePartialMessages off and
-          // JARVIS goes completely mute.
-          case 'stream_event': {
-            const ev = msg.event
-            if (
-              ev?.type === 'content_block_delta' &&
-              ev.delta?.type === 'text_delta' &&
-              ev.delta.text
-            ) {
-              sendTurn({ type: 'text', delta: ev.delta.text })
-            }
-            if (
-              ev?.type === 'content_block_start' &&
-              ev.content_block?.type === 'tool_use'
-            ) {
-              announceTool(ev.content_block.id, ev.content_block.name)
-            }
-            break
-          }
-
-          case 'assistant': {
-            // Fallback for builds that emit whole assistant messages rather
-            // than partial events. Deduped against the stream_event path.
-            for (const block of msg.content ?? msg.message?.content ?? []) {
-              if (block.type === 'tool_use') {
-                announceTool(block.id, block.name)
+  function startSession() {
+    if (session || closed) return
+    clearTimeout(prewarm)
+    session = query({
+      prompt: userMessages(),
+      options: {
+        // Everything Claude Code has configured, plus the HUD as an in-process
+        // server. The HUD's handler closes over this socket, so a `display` call
+        // lands on screen directly — which is also why this object is built per
+        // connection rather than once.
+        mcpServers: {
+          ...MCP_SERVERS,
+          jarvis: displayServer(
+            (panel) => send({ type: 'panel', panel }),
+            (blade) => send({ type: 'blade', blade }),
+          ),
+          // The interface controls, on the same socket. A separate key because
+          // MCP tool names are `mcp__<key>__<tool>` and one key can only carry
+          // one server; the underscore in it is why decideTool and announceTool
+          // both name `jarvis_ui` explicitly.
+          jarvis_ui: uiServer((op, args) => send({ type: 'ui', op, args })),
+          // The user's own Chrome, over the extension's native-host socket. It
+          // holds no per-connection state, but it is built here with the rest so
+          // the write gate is read once, at the same point as everything else.
+          jarvis_chrome: chromeServer({ allowWrites: ALLOW_WRITES, gate }),
+          // The camera, which unlike everything else here has to ask and wait.
+          jarvis_eyes: visionServer(ask),
+          // Apps and sites through the catalog and the permission gate, for the
+          // requests no fixed order matches ("can you get WhatsApp up?").
+          jarvis_neurons: neuronsServer(() => localTurns.toolContext()),
+        },
+        // A plain system prompt, not the claude_code preset. The preset is
+        // tuned for a coding agent — verbose, file-oriented, and a large chunk
+        // of input tokens on every turn. Replacing it makes the persona stick,
+        // keeps answers short enough to speak, and cuts cost per turn.
+        systemPrompt: SYSTEM_PROMPT,
+        cwd: WORKSPACE,
+        // Built-in tools: search and planning only, unless --writes. Removing a
+        // tool from the model's context is stronger than refusing it in
+        // canUseTool, which the CLI does not consult for every call.
+        ...sessionTools({ allowWrites: ALLOW_WRITES }),
+        // Nothing written to ~/.claude/projects. A voice session routinely reads
+        // pages from signed-in sites — mail, banking, work dashboards — and the
+        // transcript of that has no reason to outlive the conversation.
+        persistSession: false,
+        // The SDK replaces the child's environment when this is set, so the
+        // parent's is carried over — minus the session token, which the agent
+        // never needs and must not be able to read back out.
+        env: {
+          ...Object.fromEntries(
+            Object.entries(process.env).filter(([k]) => k !== 'JARVIS_BRIDGE_TOKEN'),
+          ),
+          CLAUDE_AGENT_SDK_CLIENT_APP: 'vas/0.1',
+        },
+        // The packaged app points this at the claude.exe it unpacked from asar.
+        ...(process.env.JARVIS_CLAUDE_EXE
+          ? { pathToClaudeCodeExecutable: process.env.JARVIS_CLAUDE_EXE }
+          : {}),
+        // No filesystem settings at all. Left to its default the SDK loads
+        // ~/.claude/settings.json and settings.local.json exactly as the CLI
+        // does — which on a working machine means a bypassPermissions default
+        // and a pile of allow-rules for Bash. Allow-rules are matched before the
+        // permission callback, so decideTool below would never even be asked
+        // about the tools it most needs to refuse. Empty makes this bridge the
+        // only authority. It also stops the global CLAUDE.md riding along on
+        // every voice turn, carrying instructions written for a coding agent
+        // into a conversation that is meant to be two sentences long.
+        //
+        // The cost is that MCP servers stop being discovered too, which is why
+        // mcpServers above passes them in by hand.
+        settingSources: [],
+        // Stated explicitly, and it has to be.
+        //
+        // With no `model` here the SDK falls back to its own default, which on
+        // this machine resolved to claude-opus-4-8[1m] — not what src/config.ts
+        // declares for the browser-direct path, and not anything anyone chose.
+        // Normally your own `/model` preference would decide, but that lives in
+        // the settings files `settingSources: []` deliberately stops loading, so
+        // without this line nothing in the project has a say at all.
+        model: MODEL,
+        effort: EFFORT,
+        maxTurns: 24,
+        permissionMode: 'default',
+        // Without this the SDK only emits whole assistant messages, and JARVIS
+        // would sit silent until the entire answer was written. Partial events
+        // are what let speech start on the first finished sentence.
+        includePartialMessages: true,
+        // Signature is (toolName, input, options) and it must return a
+        // PermissionResult object. Returning a bare boolean silently denies
+        // everything, with the tool name arriving undefined.
+        //
+        // Worth knowing: this is a last gate, not the only one. Calls the CLI
+        // has already settled never arrive here — its own classifier waves
+        // through a `Bash: echo hello` without asking, and only reaches us for
+        // something with a consequence, like a `touch`. So a deny here is
+        // reliable; an absence of a call here is not proof nothing ran.
+        canUseTool: async (toolName) => {
+          const ok = decideTool(toolName)
+          console.log(`[jarvis] tool ${toolName} -> ${ok ? 'allow' : 'deny'}`)
+          return ok
+            ? { behavior: 'allow' }
+            : {
+                behavior: 'deny',
+                // Every word of this can end up spoken, so it carries no command
+                // to read out — the persona is forbidden from saying one aloud.
+                message:
+                  'Blocked: JARVIS is running in read-only mode and cannot take' +
+                  ' actions that change anything. Tell the user this action is' +
+                  ' unavailable until they enable write access on the machine.',
               }
-            }
-            break
+        },
+      },
+    })
+
+    // Pump the session's output stream to the browser for as long as it lives.
+    ;(async () => {
+      try {
+        for await (const msg of session) {
+          if (process.env.JARVIS_DEBUG === '1') {
+            console.log('[msg]', msg.type, msg.event?.type ?? '')
           }
 
-          case 'user': {
-            // Tool results come back as a user message. This is the only place
-            // a held announcement can be resolved: a refused tool arrives with
-            // is_error set and stays off the HUD, anything else ran.
-            const blocks = msg.message?.content
-            if (!Array.isArray(blocks)) break
-            for (const block of blocks) {
-              if (block?.type === 'tool_result') {
-                settleTool(block.tool_use_id, block.is_error === true)
+          switch (msg.type) {
+            // Raw Anthropic stream events, surfaced by includePartialMessages.
+            // This is the ONLY place spoken text arrives: there is no top-level
+            // text_delta message in the SDK union and the 'assistant' message
+            // carries no deltas either. Turn includePartialMessages off and
+            // JARVIS goes completely mute.
+            case 'stream_event': {
+              const ev = msg.event
+              if (
+                ev?.type === 'content_block_delta' &&
+                ev.delta?.type === 'text_delta' &&
+                ev.delta.text
+              ) {
+                sendTurn({ type: 'text', delta: ev.delta.text })
               }
+              if (
+                ev?.type === 'content_block_start' &&
+                ev.content_block?.type === 'tool_use'
+              ) {
+                announceTool(ev.content_block.id, ev.content_block.name)
+              }
+              break
             }
-            break
+
+            case 'assistant': {
+              // Fallback for builds that emit whole assistant messages rather
+              // than partial events. Deduped against the stream_event path.
+              for (const block of msg.content ?? msg.message?.content ?? []) {
+                if (block.type === 'tool_use') {
+                  announceTool(block.id, block.name)
+                }
+              }
+              break
+            }
+
+            case 'user': {
+              // Tool results come back as a user message. This is the only place
+              // a held announcement can be resolved: a refused tool arrives with
+              // is_error set and stays off the HUD, anything else ran.
+              const blocks = msg.message?.content
+              if (!Array.isArray(blocks)) break
+              for (const block of blocks) {
+                if (block?.type === 'tool_result') {
+                  settleTool(block.tool_use_id, block.is_error === true)
+                }
+              }
+              break
+            }
+
+            case 'result':
+              // A result is not automatically a success. The error subtypes
+              // carry no `result` field at all, so reporting them as 'done' with
+              // empty text is indistinguishable from a turn that simply had
+              // nothing to say — the HUD stops spinning and JARVIS stands there
+              // silent. Say what happened instead.
+              if (msg.subtype === 'success') {
+                sendTurn({
+                  type: 'done',
+                  text: msg.result ?? '',
+                  costUsd: msg.total_cost_usd ?? null,
+                })
+              } else {
+                console.error(
+                  `[jarvis] turn failed: ${msg.subtype}`,
+                  msg.errors ?? '',
+                )
+                sendTurn({
+                  type: 'error',
+                  message: RESULT_FAILURES[msg.subtype] ?? RESULT_FAILURES.default,
+                })
+              }
+              // Whatever was waiting on this turn to finish can go now. This is
+              // the only place a turn is genuinely over.
+              finishTurn?.()
+              finishTurn = null
+              // One turn's tool ids are never referred to again, and these
+              // otherwise grow for as long as the socket is open.
+              seenTools.clear()
+              heldTools.clear()
+              break
+
+            case 'system':
+              if (msg.subtype === 'init') {
+                // Servers report 'pending' until first use — they connect
+                // lazily — so only drop the ones that are actually unusable.
+                const usable = (msg.mcp_servers ?? [])
+                  .filter((s) => s.status !== 'needs-auth' && s.status !== 'failed')
+                  .map((s) => s.name)
+                send({ type: 'ready', servers: usable })
+                console.log(`[jarvis] ${usable.length} MCP servers available`)
+              }
+              break
           }
-
-          case 'result':
-            // A result is not automatically a success. The error subtypes
-            // carry no `result` field at all, so reporting them as 'done' with
-            // empty text is indistinguishable from a turn that simply had
-            // nothing to say — the HUD stops spinning and JARVIS stands there
-            // silent. Say what happened instead.
-            if (msg.subtype === 'success') {
-              sendTurn({
-                type: 'done',
-                text: msg.result ?? '',
-                costUsd: msg.total_cost_usd ?? null,
-              })
-            } else {
-              console.error(
-                `[jarvis] turn failed: ${msg.subtype}`,
-                msg.errors ?? '',
-              )
-              sendTurn({
-                type: 'error',
-                message: RESULT_FAILURES[msg.subtype] ?? RESULT_FAILURES.default,
-              })
-            }
-            // Whatever was waiting on this turn to finish can go now. This is
-            // the only place a turn is genuinely over.
-            finishTurn?.()
-            finishTurn = null
-            // One turn's tool ids are never referred to again, and these
-            // otherwise grow for as long as the socket is open.
-            seenTools.clear()
-            heldTools.clear()
-            break
-
-          case 'system':
-            if (msg.subtype === 'init') {
-              // Servers report 'pending' until first use — they connect
-              // lazily — so only drop the ones that are actually unusable.
-              const usable = (msg.mcp_servers ?? [])
-                .filter((s) => s.status !== 'needs-auth' && s.status !== 'failed')
-                .map((s) => s.name)
-              send({ type: 'ready', servers: usable })
-              console.log(`[jarvis] ${usable.length} MCP servers available`)
-            }
-            break
         }
+      } catch (err) {
+        console.error('[jarvis] session error:', err)
+        send({ type: 'error', message: String(err?.message ?? err) })
+        // The stream is finished either way — nothing will ever be read from it
+        // again. Leaving the socket open would leave the client believing it has
+        // a working bridge, and every later question would hang for ever waiting
+        // on a pump that has already stopped. Close it so it reconnects.
+        closed = true
+        deliver?.(null)
+        session.close?.()
+        socket.close()
       }
-    } catch (err) {
-      console.error('[jarvis] session error:', err)
-      send({ type: 'error', message: String(err?.message ?? err) })
-      // The stream is finished either way — nothing will ever be read from it
-      // again. Leaving the socket open would leave the client believing it has
-      // a working bridge, and every later question would hang for ever waiting
-      // on a pump that has already stopped. Close it so it reconnects.
-      closed = true
-      deliver?.(null)
-      session.close?.()
-      socket.close()
-    }
-  })()
+    })()
+  }
 
   socket.on('message', (raw) => {
     let msg
@@ -1461,7 +1485,7 @@ wss.on('connection', (socket) => {
       localTurns.abort()
       // Held so the next question can wait for it rather than racing it.
       const stopped = turnFinished()
-      settling = Promise.resolve(session.interrupt?.())
+      settling = Promise.resolve(session?.interrupt?.())
         .catch(() => {})
         .then(() =>
           Promise.race([
@@ -1477,7 +1501,8 @@ wss.on('connection', (socket) => {
     localTurns.abort()
     console.log('[jarvis] client disconnected')
     closed = true
+    clearTimeout(prewarm)
     deliver?.(null)
-    session.close?.()
+    session?.close?.()
   })
 })

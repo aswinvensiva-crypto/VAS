@@ -26,10 +26,11 @@ export function startBridgeHost({ root }) {
   }
   const log = createWriteStream(logPath, { flags: 'a' })
 
-  // Packaged builds unpack Claude Code's executable out of app.asar; point the
-  // SDK at it explicitly. In development the SDK finds its own.
+  // Packaged builds point the SDK at Claude Code's executable explicitly (out
+  // of app.asar.unpacked if the app is ever packed into an asar again). In
+  // development the SDK finds its own.
   const claudeExe = app.isPackaged
-    ? join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', '@anthropic-ai', 'claude-agent-sdk-win32-x64', 'claude.exe')
+    ? join(app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked'), 'node_modules', '@anthropic-ai', 'claude-agent-sdk-win32-x64', 'claude.exe')
     : ''
 
   const state = {
@@ -58,6 +59,7 @@ export function startBridgeHost({ root }) {
           JARVIS_BRIDGE_TOKEN: token,
           JARVIS_BRIDGE_PORT: String(state.port || 0),
           ...(claudeExe ? { JARVIS_CLAUDE_EXE: claudeExe } : {}),
+          ...(app.isPackaged ? { JARVIS_APP_ONLY: '1' } : {}),
         },
       })
       const stamp = () => new Date().toISOString()

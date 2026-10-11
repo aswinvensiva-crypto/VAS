@@ -1,4 +1,5 @@
 import { BACKEND, BRIDGE_HTTP_URL, env } from '../config'
+import { desktop } from './desktop'
 
 /**
  * What speech engines are actually available, decided once at boot.
@@ -59,31 +60,40 @@ export async function probeCapabilities(): Promise<Capabilities> {
     probed = true
     return current
   }
-  try {
-    const res = await fetch(`${BRIDGE_HTTP_URL}/health`, {
-      signal: AbortSignal.timeout(3000),
-    })
-    if (res.ok) {
-      const h = (await res.json()) as {
-        stt?: boolean
-        tts?: boolean
-        sttEngine?: string | null
-        kws?: boolean
-        modelsMissing?: string[]
-        user?: { name?: string }
+  // In the desktop app the bridge is always there — main waits for it before
+  // opening the window — so a slow answer means "busy starting up" (the first
+  // launch after an install, while Windows scans the new files), never "no
+  // bridge". Keep asking rather than boot believing JARVIS is deaf.
+  const attempts = desktop ? 4 : 1
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const res = await fetch(`${BRIDGE_HTTP_URL}/health`, {
+        signal: AbortSignal.timeout(desktop ? 6000 : 3000),
+      })
+      if (res.ok) {
+        const h = (await res.json()) as {
+          stt?: boolean
+          tts?: boolean
+          sttEngine?: string | null
+          kws?: boolean
+          modelsMissing?: string[]
+          user?: { name?: string }
+        }
+        current = {
+          stt: Boolean(h.stt),
+          tts: Boolean(h.tts),
+          sttEngine: h.sttEngine ?? null,
+          kws: Boolean(h.kws),
+          modelsMissing: h.modelsMissing ?? [],
+          user: h.user ?? {},
+        }
+        break
       }
-      current = {
-        stt: Boolean(h.stt),
-        tts: Boolean(h.tts),
-        sttEngine: h.sttEngine ?? null,
-        kws: Boolean(h.kws),
-        modelsMissing: h.modelsMissing ?? [],
-        user: h.user ?? {},
-      }
+    } catch {
+      // Bridge down or slow — stay on the browser engines rather than blocking
+      // boot on a health check that is only an optimisation.
     }
-  } catch {
-    // Bridge down or slow — stay on the browser engines rather than blocking
-    // boot on a health check that is only an optimisation.
+    if (attempt < attempts) await new Promise((r) => setTimeout(r, 500))
   }
   probed = true
   return current

@@ -23,14 +23,25 @@ synapses:
       - order: { text: "what's the time", matching-type: ordered-strict }
       - order: { text: "what is the time", matching-type: ordered-strict }
       - order: { text: "tell me the time", matching-type: ordered-strict }
+      - order: { text: "what time is it now", matching-type: ordered-strict }
+      - order: { text: "what time is it right now", matching-type: ordered-strict }
+      - order: { text: "what's the time now", matching-type: ordered-strict }
+      - order: { text: "what is the time now", matching-type: ordered-strict }
     neurons:
       - time: {}
 
   - name: date
     signals:
       - order: { text: "what's the date", matching-type: ordered-strict }
-      - order: { text: "what day is it", matching-type: ordered-strict }
+      - order: { text: "what is the date", matching-type: ordered-strict }
+      - order: { text: "what's the date today", matching-type: ordered-strict }
+      - order: { text: "what is the date today", matching-type: ordered-strict }
       - order: { text: "what's today's date", matching-type: ordered-strict }
+      - order: { text: "what is today's date", matching-type: ordered-strict }
+      - order: { text: "today's date", matching-type: ordered-strict }
+      - order: { text: "what day is it", matching-type: ordered-strict }
+      - order: { text: "what day is it today", matching-type: ordered-strict }
+      - order: { text: "what day is today", matching-type: ordered-strict }
     neurons:
       - date: {}
 
