@@ -1,4 +1,42 @@
-# J.A.R.V.I.S.
+# VAS
+
+**VAS** is a Windows desktop app for **JARVIS**, a voice assistant whose brain is
+Claude Code. It grew out of [jarvis-main](#jarvis-main-the-original-project)
+(documented below) and is being turned into a laptop app. The plan:
+
+- runs in its own window and the system tray instead of a localhost web page;
+- wakes on **"Hey Jarvis"** (on-device, free, offline) or **Ctrl+Alt+Space**;
+- opens Windows apps by voice, asking once per app before it does;
+- reads your real, signed-in Chrome, and asks you to say "confirm" before it
+  clicks or types anything;
+- learns from corrections ("no, I said Spotify") and from routines you teach it
+  ("when I say work mode, open VS Code and Chrome");
+- only acts on your voice once you enroll it.
+
+The full design and step-by-step plan is in [docs/vas/PLAN.md](docs/vas/PLAN.md).
+
+### Status
+
+| Area | State |
+|---|---|
+| Repository, baseline, probes | Done. The Claude-in-Chrome named pipe works on Windows |
+| App naming (VAS outside, JARVIS inside) | Done |
+| Windows fixes, bridge hardening, Electron shell | Next |
+| Chrome, local voice, permissions, neurons | Planned |
+
+### Developing
+
+```bash
+npm install
+npm test           # unit tests
+npm run build      # type-check and build the face
+npm run probe:chrome   # read-only check of the Chrome extension link
+npm run models     # download the local voice models (about 0.9 GB)
+```
+
+---
+
+## jarvis-main: the original project
 
 A browser voice assistant with an Iron Man holographic interface. Say
 **"Hey Jarvis"**, he wakes, listens, and does real things through your tools —

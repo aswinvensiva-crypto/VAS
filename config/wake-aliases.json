@@ -1,0 +1,5 @@
+{
+  "_comment": "JARVIS's name as speech recognisers actually return it. Shared by the face (src/lib/wakeWords.ts) and the bridge, which strips the name before matching neurons. The first entry is the canonical name.",
+  "prefixes": ["hey", "hi", "ok", "okay", "yo"],
+  "names": ["jarvis", "jarvys", "jervis", "travis", "jarviss", "java's", "jarv"]
+}
