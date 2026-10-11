@@ -1,0 +1,178 @@
+# JARVIS's built-in neurons.
+#
+# Each synapse maps spoken orders to neurons — actions that run right here on
+# this PC, instantly, without asking Claude. Anything that matches none of them
+# goes to Claude as usual.
+#
+# Orders are templates: {{name}} captures words. matching-type is how strictly
+# the words must line up (after "hey jarvis", "please", "can you"… are
+# dropped):
+#   normal          every word of the order appears; extra words are fine
+#   strict          the same words and no others, in any order
+#   ordered-strict  exactly these words, in this order
+#
+# Your own routines (taught by voice, or written by hand) live in
+# %APPDATA%\VAS\data\brain.yml and win over these when both fit.
+
+version: 1
+synapses:
+  # --- the basics ------------------------------------------------------------
+  - name: time
+    signals:
+      - order: { text: "what time is it", matching-type: ordered-strict }
+      - order: { text: "what's the time", matching-type: ordered-strict }
+      - order: { text: "what is the time", matching-type: ordered-strict }
+      - order: { text: "tell me the time", matching-type: ordered-strict }
+    neurons:
+      - time: {}
+
+  - name: date
+    signals:
+      - order: { text: "what's the date", matching-type: ordered-strict }
+      - order: { text: "what day is it", matching-type: ordered-strict }
+      - order: { text: "what's today's date", matching-type: ordered-strict }
+    neurons:
+      - date: {}
+
+  - name: repeat
+    signals:
+      - order: { text: "what did you say", matching-type: ordered-strict }
+      - order: { text: "say that again", matching-type: ordered-strict }
+      - order: { text: "repeat that", matching-type: ordered-strict }
+    neurons:
+      - repeat: {}
+
+  # --- standing down -----------------------------------------------------------
+  - name: sleep
+    signals:
+      - order: { text: "go to sleep", matching-type: ordered-strict }
+      - order: { text: "that's all", matching-type: ordered-strict }
+      - order: { text: "stand down", matching-type: ordered-strict }
+    neurons:
+      - kill_switch: { mode: sleep }
+
+  - name: mute
+    signals:
+      - order: { text: "stop listening", matching-type: ordered-strict }
+      - order: { text: "mute yourself", matching-type: ordered-strict }
+    neurons:
+      - kill_switch: { mode: mute }
+
+  - name: quit
+    signals:
+      - order: { text: "shut down vas", matching-type: ordered-strict }
+      - order: { text: "quit vas", matching-type: ordered-strict }
+      - order: { text: "shut yourself down", matching-type: ordered-strict }
+    neurons:
+      - kill_switch: { mode: quit }
+
+  - name: lockdown
+    signals:
+      - order: { text: "lock down", matching-type: ordered-strict }
+      - order: { text: "lockdown", matching-type: ordered-strict }
+    neurons:
+      - kill_switch: { mode: lockdown }
+
+  - name: unlock
+    signals:
+      - order: { text: "unlock", matching-type: ordered-strict }
+      - order: { text: "end lockdown", matching-type: ordered-strict }
+    neurons:
+      - kill_switch: { mode: unlock }
+
+  # --- Windows apps --------------------------------------------------------------
+  - name: open-app
+    signals:
+      - order: { text: "open {{app}}", matching-type: ordered-strict }
+      - order: { text: "launch {{app}}", matching-type: ordered-strict }
+      - order: { text: "start {{app}}", matching-type: ordered-strict }
+    neurons:
+      - open_app: { app: "{{app}}" }
+
+  - name: close-app
+    signals:
+      - order: { text: "close {{app}}", matching-type: ordered-strict }
+      - order: { text: "quit {{app}}", matching-type: ordered-strict }
+      - order: { text: "exit {{app}}", matching-type: ordered-strict }
+    neurons:
+      - close_app: { app: "{{app}}" }
+
+  - name: focus-app
+    signals:
+      - order: { text: "switch to {{app}}", matching-type: ordered-strict }
+      - order: { text: "bring up {{app}}", matching-type: ordered-strict }
+    neurons:
+      - focus_app: { app: "{{app}}" }
+
+  - name: list-apps
+    signals:
+      - order: { text: "what apps do i have", matching-type: ordered-strict }
+      - order: { text: "list my apps", matching-type: ordered-strict }
+    neurons:
+      - list_apps: {}
+
+  - name: refresh-apps
+    signals:
+      - order: { text: "refresh my apps", matching-type: ordered-strict }
+      - order: { text: "refresh apps", matching-type: ordered-strict }
+    neurons:
+      - refresh_apps: {}
+
+  # --- Chrome ----------------------------------------------------------------------
+  - name: chrome-open
+    signals:
+      - order: { text: "open {{site}} in chrome", matching-type: ordered-strict }
+      - order: { text: "go to {{site}}", matching-type: ordered-strict }
+    neurons:
+      - chrome_open: { site: "{{site}}" }
+
+  - name: chrome-search
+    signals:
+      - order: { text: "search for {{query}}", matching-type: ordered-strict }
+      - order: { text: "google {{query}}", matching-type: ordered-strict }
+      - order: { text: "search {{query}} on google", matching-type: ordered-strict }
+    neurons:
+      - chrome_search: { query: "{{query}}" }
+
+  - name: chrome-read
+    signals:
+      - order: { text: "read this page", matching-type: ordered-strict }
+      - order: { text: "what's on this page", matching-type: ordered-strict }
+      - order: { text: "what's on this tab", matching-type: ordered-strict }
+      - order: { text: "what is on this page", matching-type: ordered-strict }
+      - order: { text: "what is on this tab", matching-type: ordered-strict }
+      - order: { text: "summarize this page", matching-type: ordered-strict }
+      - order: { text: "summarise this page", matching-type: ordered-strict }
+    neurons:
+      - chrome_read_tab: {}
+
+  # --- learning --------------------------------------------------------------------
+  - name: correction
+    signals:
+      - order: { text: "no i said {{text}}", matching-type: ordered-strict }
+      - order: { text: "i said {{text}}", matching-type: ordered-strict }
+      - order: { text: "no i meant {{text}}", matching-type: ordered-strict }
+      - order: { text: "i meant {{text}}", matching-type: ordered-strict }
+    neurons:
+      - correction: { text: "{{text}}" }
+
+  - name: teach
+    signals:
+      - order: { text: "when i say {{spec}}", matching-type: ordered-strict }
+      - order: { text: "whenever i say {{spec}}", matching-type: ordered-strict }
+    neurons:
+      - teach: { spec: "{{spec}}" }
+
+  - name: forget-routine
+    signals:
+      - order: { text: "forget the routine {{name}}", matching-type: ordered-strict }
+      - order: { text: "delete the routine {{name}}", matching-type: ordered-strict }
+    neurons:
+      - forget_routine: { name: "{{name}}" }
+
+  - name: list-routines
+    signals:
+      - order: { text: "what routines do i have", matching-type: ordered-strict }
+      - order: { text: "list my routines", matching-type: ordered-strict }
+    neurons:
+      - list_routines: {}

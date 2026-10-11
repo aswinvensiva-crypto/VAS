@@ -23,6 +23,11 @@ import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { createPolicy, sessionTools } from './policy.mjs'
 import { createGate } from './gate.mjs'
+import { createBrain } from './neurons/brain.mjs'
+import { registry as NEURONS } from './neurons/registry.mjs'
+import { createLocal } from './neurons/local.mjs'
+import { neuronsServer } from './neurons/mcp.mjs'
+import { loadCorrections } from './corrections/store.mjs'
 import { dataDir } from './store/files.mjs'
 import { loadConfig } from './store/config.mjs'
 import { createVoiceEngine } from './voice/engine.mjs'
@@ -68,6 +73,13 @@ const TOKEN = process.env.JARVIS_BRIDGE_TOKEN || null
 /** VAS settings (%APPDATA%\VAS\data\config.json), and the local voice engine. */
 const CONFIG = await loadConfig()
 const VOICE = createVoiceEngine({ config: CONFIG })
+
+/**
+ * JARVIS's neurons: spoken orders that run here without Claude (bridge/neurons),
+ * and the mishearings he has learned to fix (bridge/corrections).
+ */
+const BRAIN = createBrain({ known: new Set(NEURONS.keys()) })
+const CORRECTIONS = await loadCorrections()
 
 function tokenOk(presented) {
   if (!TOKEN) return true
@@ -910,6 +922,13 @@ const handleRequest = async (req, res) => {
         config: CONFIG,
         scribe: key ? (buf) => scribeTranscribe(buf, 'audio/wav', key, CONFIG.stt.language) : null,
       })
+      // Mishearings you have corrected before are fixed here, before anything
+      // acts on the words. The raw transcript rides along for learning.
+      if (out.text) {
+        out.raw = out.text
+        out.text = CORRECTIONS.apply(out.text)
+        if (out.wake) out.wake.trailing = out.text
+      }
       return json(200, out)
     } catch (err) {
       console.error('[jarvis] transcription failed:', err)
@@ -1120,6 +1139,33 @@ wss.on('connection', (socket) => {
   })
 
   /**
+   * Handing a question to Claude: tag the turn with its id and feed it to the
+   * agent's input — prefixed with anything handled locally since its last
+   * turn, so it knows what just happened on this PC.
+   */
+  function deliverToClaude(text, id) {
+    answering = id
+    const message = localTurns.takeLog() + text
+    if (deliver) {
+      const resolve = deliver
+      deliver = null
+      resolve(message)
+    } else {
+      inbox.push(message)
+    }
+  }
+
+  /** Neurons first: an order that matches runs here, instantly. */
+  const localTurns = createLocal({
+    send,
+    ask,
+    gate,
+    brain: BRAIN,
+    corrections: CORRECTIONS,
+    toClaude: deliverToClaude,
+  })
+
+  /**
    * Announcing a tool on the HUD, once, and only if it actually runs.
    *
    * A tool_use block surfaces twice — as a partial stream event and again on
@@ -1220,6 +1266,9 @@ wss.on('connection', (socket) => {
         jarvis_chrome: chromeServer({ allowWrites: ALLOW_WRITES, gate }),
         // The camera, which unlike everything else here has to ask and wait.
         jarvis_eyes: visionServer(ask),
+        // Apps and sites through the catalog and the permission gate, for the
+        // requests no fixed order matches ("can you get WhatsApp up?").
+        jarvis_neurons: neuronsServer(() => localTurns.toolContext()),
       },
       // A plain system prompt, not the claude_code preset. The preset is
       // tuned for a coding agent — verbose, file-oriented, and a large chunk
@@ -1444,16 +1493,7 @@ wss.on('connection', (socket) => {
        */
       const text = msg.text
       const id = typeof msg.id === 'string' ? msg.id : null
-      void settling.then(() => {
-        answering = id
-        if (deliver) {
-          const resolve = deliver
-          deliver = null
-          resolve(text)
-        } else {
-          inbox.push(text)
-        }
-      })
+      void settling.then(() => localTurns.handle(text, id))
     }
 
     if (msg.type === 'reply' && typeof msg.id === 'string') {
@@ -1466,8 +1506,10 @@ wss.on('connection', (socket) => {
     }
 
     if (msg.type === 'interrupt') {
-      // Standing down or barging in withdraws any "shall I?" still open.
+      // Standing down or barging in withdraws any "shall I?" still open, and
+      // drops a local turn in progress.
       gate.abortAll()
+      localTurns.abort()
       // Held so the next question can wait for it rather than racing it.
       const stopped = turnFinished()
       settling = Promise.resolve(session.interrupt?.())
@@ -1483,6 +1525,7 @@ wss.on('connection', (socket) => {
 
   socket.on('close', () => {
     gate.abortAll()
+    localTurns.abort()
     console.log('[jarvis] client disconnected')
     closed = true
     deliver?.(null)

@@ -39,6 +39,8 @@ type Frame = {
   prompt?: string
   action?: string
   timeoutMs?: number
+  /** On a finished turn: what the face should do next ('dormant'). */
+  after?: string
 }
 
 /** Every question gets an id so its answer can be told from anyone else's. */
@@ -104,6 +106,12 @@ export function watchConfirm(
 ) {
   onConfirm = ask
   onConfirmCancel = cancel
+}
+
+/** The app itself, from a neuron: 'mute' (stop listening for the wake word), 'quit'. */
+let onApp: ((op: string) => void) | null = null
+export function watchApp(fn: (op: string) => void) {
+  onApp = fn
 }
 
 /** Blades arrive the same way panels do — pushed mid-turn, so the article is
@@ -245,6 +253,8 @@ function dispatch(ws: WebSocket) {
           .then(reply)
           .catch(() => reply({ cancelled: true }))
       }
+    } else if (msg.type === 'app' && msg.op) {
+      onApp?.(msg.op)
     } else if (msg.type === 'confirm_cancel') {
       onConfirmCancel?.(msg.id ?? '*')
     } else if (msg.type === 'ui' && msg.op) {
@@ -365,7 +375,7 @@ let pending: { finish: (fallback?: string) => void } | null = null
 export async function ask(
   prompt: string,
   handlers: AskHandlers,
-): Promise<{ text: string; tools: string[] }> {
+): Promise<{ text: string; tools: string[]; after?: string }> {
   /**
    * A new question supersedes the one in flight.
    *
@@ -430,12 +440,12 @@ export async function ask(
       ws.removeEventListener('error', onError)
     }
 
-    const finish = (fallback = '') => {
+    const finish = (fallback = '', after?: string) => {
       if (done) return
       cleanup()
       // Prefer the streamed text; fall back to the final result if this build
       // didn't emit deltas.
-      resolve({ text: (text || fallback).trim(), tools })
+      resolve({ text: (text || fallback).trim(), tools, ...(after ? { after } : {}) })
     }
 
     const fail = (err: Error) => {
@@ -490,7 +500,7 @@ export async function ask(
             break
 
           case 'done':
-            finish(msg.text ?? '')
+            finish(msg.text ?? '', msg.after)
             break
 
           case 'error':

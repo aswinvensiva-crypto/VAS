@@ -28,7 +28,7 @@ export async function ask(
   prompt: string,
   history: Msg[],
   handlers: AskHandlers,
-): Promise<{ text: string; tools: string[] }> {
+): Promise<{ text: string; tools: string[]; after?: string }> {
   return usingBridge
     ? bridge.ask(prompt, handlers)
     : direct.ask([...history, { role: 'user', content: prompt }], handlers)
@@ -90,6 +90,11 @@ export function watchConfirm(
   cancel: (id: string) => void,
 ): void {
   if (usingBridge) bridge.watchConfirm(ask, cancel)
+}
+
+/** Neurons acting on the app itself (mute, quit). Bridge-only. */
+export function watchApp(fn: (op: string) => void): void {
+  if (usingBridge) bridge.watchApp(fn)
 }
 
 /**

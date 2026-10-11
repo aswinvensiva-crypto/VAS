@@ -4,6 +4,11 @@ import { createConnection } from 'node:net'
 import { readdir, stat } from 'node:fs/promises'
 import { userInfo } from 'node:os'
 import { join } from 'node:path'
+import { execFile } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
+
+const execFileP = promisify(execFile)
 
 /**
  * JARVIS's hands on your actual browser.
@@ -940,4 +945,68 @@ export function chromeServer({ allowWrites, gate = null }) {
 /** Whether the extension looks reachable, for the boot log. */
 export async function chromeAvailable() {
   return (await findSocket()) !== null
+}
+
+/** Pull every tab the extension reports from a tabs_context reply. */
+function readTabs(reply) {
+  for (const block of reply?.result?.content ?? []) {
+    if (block?.type !== 'text') continue
+    try {
+      const tabs = JSON.parse(block.text)?.availableTabs
+      if (Array.isArray(tabs)) return tabs
+    } catch {
+      /* the prose block */
+    }
+  }
+  return []
+}
+
+const errorText = (reply) => {
+  const d = reply?.error?.content ?? reply?.error?.message ?? reply?.error
+  return typeof d === 'string' ? d : JSON.stringify(d)
+}
+
+/**
+ * The same browser, for neurons rather than the model: "open YouTube" and
+ * "search for ..." run these directly, with no model turn.
+ *
+ * Pages always open in a NEW tab, never the one the user is reading — a
+ * half-written email in the current tab is not something to navigate away
+ * from on a voice command.
+ */
+export const chromeOps = {
+  available: chromeAvailable,
+
+  /** Open `url` in a fresh tab and wait until it has really loaded. */
+  async open(url) {
+    const created = await link.call('tabs_create_mcp', {})
+    if (created?.error) throw new Error(errorText(created))
+    // The newest tab in the group is the one just made.
+    const tabs = readTabs(await link.call('tabs_context_mcp', { createIfEmpty: false }))
+    const tab = tabs.length ? tabs[tabs.length - 1].tabId : readTab(created)
+    if (typeof tab !== 'number') throw new Error('the new tab did not appear')
+    activeTab = tab
+    const nav = await link.call('navigate', { url, tabId: tab })
+    if (nav?.error) throw new Error(errorText(nav))
+    await settle(tab, url)
+    return { tabId: tab }
+  },
+
+  /** The address of the tab the user is looking at (front Chrome window). */
+  async currentUrl() {
+    const script = fileURLToPath(new URL('./os/chrome-url.ps1', import.meta.url))
+    const root = process.env.SystemRoot || 'C:\Windows'
+    try {
+      const { stdout } = await execFileP(
+        join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script],
+        { windowsHide: true, timeout: 8000 },
+      )
+      const raw = stdout.trim()
+      if (!raw) return null
+      return /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`
+    } catch {
+      return null
+    }
+  },
 }

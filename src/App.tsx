@@ -24,6 +24,7 @@ import {
   watchBlades,
   watchCapture,
   watchConfirm,
+  watchApp,
   watchUi,
   watchConnection,
   connectedLabels,
@@ -152,9 +153,11 @@ export default function App() {
     const turnId = newId()
     let started = false
     let filled = false
+    /** What the turn asked for afterwards — "go to sleep" stands him down. */
+    let after: string | undefined
 
     try {
-      const { text } = await ask(said, history.current, {
+      const { text, after: next } = await ask(said, history.current, {
         onText: (delta) => {
           if (stale()) return
           if (!started) {
@@ -188,6 +191,7 @@ export default function App() {
           }
         },
       })
+      after = next
 
       if (stale()) return
 
@@ -219,8 +223,10 @@ export default function App() {
         store.getState().setActiveTool(null)
         music.working(false)
         // Stay open. Having to say his name again to add one more sentence is
-        // the difference between a conversation and a vending machine.
-        listen(FOLLOW_UP_MS)
+        // the difference between a conversation and a vending machine —
+        // unless the turn itself was "go to sleep".
+        if (after === 'dormant') goDormant()
+        else listen(FOLLOW_UP_MS)
       }
     }
   }
@@ -454,6 +460,14 @@ export default function App() {
     watchPanels((panel) => store.getState().pushPanel(panel))
     watchBlades((blade) => store.getState().pushBlade(blade))
     watchConfirm(askConfirm, cancelConfirm)
+    watchApp((op) => {
+      if (op === 'mute') {
+        wakeListening.current = false
+        desktop?.setListening(false)
+      } else if (op === 'quit') {
+        desktop?.quit()
+      }
+    })
 
     /**
      * JARVIS asking to see something.
