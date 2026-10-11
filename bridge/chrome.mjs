@@ -752,7 +752,7 @@ export function chromeServer({ allowWrites }) {
 
       tool(
         'chrome_key',
-        'Press a key or chord, e.g. "Return", "Escape", "cmd+a".',
+        `Press a key or chord, e.g. "Return", "Escape", "${process.platform === 'darwin' ? 'cmd' : 'ctrl'}+a".`,
         { text: z.string().describe('The key to press.'), tabId },
         async (args) => forward('computer')({ action: 'key', ...args }),
       ),

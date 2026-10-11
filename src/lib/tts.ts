@@ -184,10 +184,16 @@ function score(v: SpeechSynthesisVoice): number {
   else if (/\b(oliver|arthur|jamie|malcolm)\b/.test(n)) s += 80
   // Newer macOS en-GB male voices — casual, but serviceable.
   else if (/\b(reed|rocko|eddy)\b/.test(n)) s += 40
+  // Windows. The OneCore voices are what Chrome, Edge and Electron expose on
+  // Windows 11; the en-GB male is the nearest to the character, the US and
+  // en-IN males are clear and well-paced.
+  else if (/^microsoft (ryan|thomas)\b/.test(n)) s += 85
+  else if (/^microsoft george\b/.test(n)) s += 80
+  else if (/^microsoft (mark|david|guy|ravi|prabhat)\b/.test(n)) s += 60
 
   // Higher-quality variants of whatever matched above.
   if (n.includes('premium')) s += 30
-  else if (n.includes('enhanced')) s += 20
+  else if (n.includes('enhanced') || n.includes('(natural)')) s += 20
 
   if (/en[-_]gb/i.test(v.lang)) s += 25
   else if (/^en/i.test(v.lang)) s += 5

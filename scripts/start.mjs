@@ -13,6 +13,11 @@
 import { spawn } from 'node:child_process'
 import process from 'node:process'
 import { cpSync, existsSync, mkdirSync } from 'node:fs'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+/** The project root, so `npm start` works from any working directory. */
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
 /**
  * Put MediaPipe's WebAssembly where the page can actually load it.
@@ -31,10 +36,10 @@ import { cpSync, existsSync, mkdirSync } from 'node:fs'
  * after the first run.
  */
 function vendorWasm() {
-  const from = 'node_modules/@mediapipe/tasks-vision/wasm'
-  const to = 'public/mediapipe'
+  const from = join(ROOT, 'node_modules/@mediapipe/tasks-vision/wasm')
+  const to = join(ROOT, 'public/mediapipe')
   if (!existsSync(from)) return // gesture control is optional; carry on without it
-  if (existsSync(`${to}/vision_wasm_internal.wasm`)) return
+  if (existsSync(join(to, 'vision_wasm_internal.wasm'))) return
   try {
     mkdirSync(to, { recursive: true })
     cpSync(from, to, { recursive: true })
@@ -60,6 +65,7 @@ const children = []
 function run(name, command, args, colour, env) {
   const label = paint(name, colour)
   const child = spawn(command, args, {
+    cwd: ROOT,
     env: { ...process.env, ...env },
     shell: false,
   })
@@ -114,10 +120,12 @@ if (port) {
 vendorWasm()
 
 console.log('\nVAS: starting JARVIS — the brain and the face.\n')
-run('bridge', 'node', ['bridge/server.mjs'], '36', bridgeEnv)
+// The same node that is running this launcher, rather than whichever `node`
+// happens to be first on PATH.
+run('bridge', process.execPath, [join(ROOT, 'bridge/server.mjs')], '36', bridgeEnv)
 // npm is a shell script on most systems; call the vite binary directly so we do
 // not need shell:true (which would break the argument handling above).
-run('face', process.execPath, ['node_modules/vite/bin/vite.js'], '35', {})
+run('face', process.execPath, [join(ROOT, 'node_modules/vite/bin/vite.js')], '35', {})
 
 console.log(
   '\nWhen it says the dev server is ready, open the URL it prints in Chrome,\n' +

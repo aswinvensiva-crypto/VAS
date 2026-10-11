@@ -7,7 +7,7 @@
 // there, and the script always exits 0 — it is advice, not a gate.
 
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -35,10 +35,37 @@ try {
   line(warn, 'Could not read the Node.js version. JARVIS needs Node 20 or newer.');
 }
 
+// --- Claude Code, as the bridge runs it ----------------------------------
+// The Agent SDK ships its own claude binary for this platform and that is what
+// the bridge actually starts, so it is the one worth checking first.
+const bundled = join(
+  'node_modules',
+  '@anthropic-ai',
+  `claude-agent-sdk-${process.platform}-${process.arch}`,
+  process.platform === 'win32' ? 'claude.exe' : 'claude',
+);
+if (existsSync(bundled)) {
+  const res = spawnSync(bundled, ['--version'], { encoding: 'utf8', timeout: 20000 });
+  if (res.status === 0 && res.stdout) {
+    line(tick, `Bundled Claude Code (used by the bridge): ${res.stdout.trim()}`);
+  } else {
+    line(warn, `Bundled Claude Code is present but did not start (${res.error?.message ?? `exit ${res.status}`}).`);
+  }
+} else {
+  line(warn, 'The Agent SDK\'s bundled Claude Code is missing. Run `npm install`.');
+}
+
 // --- Claude CLI on PATH ---------------------------------------------------
+// Only needed for logging in. On Windows `claude` is a .cmd/.ps1 shim, which
+// spawnSync cannot run without a shell; the arguments are constant, so a shell
+// adds no injection risk here.
 let claudeFound = false;
 try {
-  const res = spawnSync('claude', ['--version'], { encoding: 'utf8', timeout: 10000 });
+  const res = spawnSync('claude', ['--version'], {
+    encoding: 'utf8',
+    timeout: 10000,
+    shell: process.platform === 'win32',
+  });
   if (res.status === 0 && res.stdout) {
     claudeFound = true;
     line(tick, `Claude CLI found: ${res.stdout.trim()}`);

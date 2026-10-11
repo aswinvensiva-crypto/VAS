@@ -96,7 +96,8 @@ function originAllowed(origin) {
  * runs a shell, or changes the world waits for JARVIS_ALLOW_WRITES=1. Start
  * without it, and turn it on once you trust what you're demoing.
  */
-const ALLOW_WRITES = process.env.JARVIS_ALLOW_WRITES === '1'
+const ALLOW_WRITES =
+  process.env.JARVIS_ALLOW_WRITES === '1' || process.argv.includes('--writes')
 
 /**
  * The orchestrator model. Override with JARVIS_MODEL to trade quality for pace
@@ -163,10 +164,17 @@ function configuredServers() {
     const cfg = JSON.parse(
       readFileSync(join(homedir(), '.claude.json'), 'utf8'),
     )
+    // Claude Code keys projects by path with forward slashes even on Windows
+    // ("C:/Users/you"), while homedir() returns backslashes, so compare both
+    // spellings, case-insensitively as Windows paths are.
+    const home = homedir().replace(/\\/g, '/').toLowerCase()
+    const homeProject = Object.entries(cfg.projects ?? {}).find(
+      ([path]) => path.replace(/\\/g, '/').toLowerCase() === home,
+    )?.[1]
     return {
       ...(cfg.mcpServers ?? {}),
       // Servers scoped to the home directory apply too, since that's our cwd.
-      ...(cfg.projects?.[homedir()]?.mcpServers ?? {}),
+      ...(homeProject?.mcpServers ?? {}),
     }
   } catch {
     return {}
@@ -485,7 +493,8 @@ const FILE_ROOTS = [
   // $TMPDIR under /var/folders while half the tools that take a screenshot
   // still write it to /tmp. Dropping one of them loses real panels.
   tmpdir(),
-  '/tmp',
+  // On Windows '/tmp' resolves to C:\tmp, which nothing writes to.
+  ...(process.platform === 'win32' ? [] : ['/tmp']),
   ...(process.env.JARVIS_FILE_ROOTS ?? '')
     .split(',')
     .map((s) => s.trim())
