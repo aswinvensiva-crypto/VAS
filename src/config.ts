@@ -5,6 +5,8 @@
  * committed. See .env.example for the full list.
  */
 
+import { desktop } from './lib/desktop'
+
 /**
  * Vite inlines a blank `.env` entry as an empty string, not as undefined, so
  * `??` never falls through to the default — and .env.example ships every
@@ -58,20 +60,24 @@ function flag(name: string, raw: unknown, fallback: boolean): boolean {
  *              deploys as a static site, but it needs VITE_ANTHROPIC_API_KEY in
  *              the bundle and only reaches remote HTTP MCP servers.
  */
-export const BACKEND: 'bridge' | 'direct' = choice(
-  'VITE_BACKEND',
-  import.meta.env.VITE_BACKEND,
-  ['bridge', 'direct'] as const,
-  'bridge',
-)
+export const BACKEND: 'bridge' | 'direct' = desktop
+  ? // The desktop app always talks to its own bridge. Direct mode would mean
+    // an API key compiled into the window, which a desktop app must never ship.
+    'bridge'
+  : choice('VITE_BACKEND', import.meta.env.VITE_BACKEND, ['bridge', 'direct'] as const, 'bridge')
 
 /**
  * Where the bridge lives. Derived once here rather than in each of the three
  * places that talk to it, so moving off the default port is a single edit.
  * `wss://` maps to `https://` on its own, which is why this is a prefix swap
  * rather than a hardcoded scheme.
+ *
+ * In the desktop app the address comes from the app itself (the port is picked
+ * per launch). Otherwise 127.0.0.1 rather than "localhost": the bridge only
+ * listens on IPv4 loopback, and "localhost" may try ::1 first.
  */
-export const BRIDGE_WS_URL = str(import.meta.env.VITE_BRIDGE_URL) ?? 'ws://localhost:8787'
+export const BRIDGE_WS_URL =
+  desktop?.bridge.ws ?? str(import.meta.env.VITE_BRIDGE_URL) ?? 'ws://127.0.0.1:8787'
 export const BRIDGE_HTTP_URL = BRIDGE_WS_URL.replace(/^ws/, 'http')
 
 /**

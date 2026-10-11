@@ -1,6 +1,7 @@
 import type { AskHandlers } from './anthropic'
 import type { Blade, Panel } from '../store'
 import { BRIDGE_WS_URL } from '../config'
+import { desktop } from './desktop'
 
 /**
  * Client for the local bridge (see bridge/server.mjs).
@@ -218,7 +219,12 @@ function connect(): Promise<WebSocket> {
   firstReady = deferred()
 
   connecting = new Promise<WebSocket>((resolve, reject) => {
-    const ws = new WebSocket(BRIDGE_WS_URL)
+    // In the desktop app the bridge wants this launch's token. A browser
+    // socket cannot set headers, so it is offered as a subprotocol; the bridge
+    // answers with plain "vas.v1" and never echoes the secret.
+    const ws = desktop
+      ? new WebSocket(BRIDGE_WS_URL, ['vas.v1', `vas.token.${desktop.bridge.token}`])
+      : new WebSocket(BRIDGE_WS_URL)
     let settled = false
 
     /**

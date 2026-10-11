@@ -35,6 +35,7 @@ import { env } from './config'
 // The same mishearings the wake word accepts — otherwise a turn that woke him
 // as "travis" gets that word sent on to the model as a question.
 import { BARE_NAME, LEADING_NAME } from './lib/wakeWords'
+import { desktop } from './lib/desktop'
 
 /**
  * The conversation.
@@ -79,6 +80,10 @@ export default function App() {
   const turn = useRef(0)
   const booting = useRef(false)
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** The tray's "Listening for Hey Jarvis" switch. Off means the wake word is
+   *  ignored; the hotkey and Space still start a turn, because those are an
+   *  explicit request rather than something overheard. */
+  const wakeListening = useRef(true)
   const voicePoll = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // -- helpers --------------------------------------------------------------
@@ -222,7 +227,7 @@ export default function App() {
       case 'boot':
         return 'deaf'
       case 'dormant':
-        return 'wake'
+        return wakeListening.current ? 'wake' : 'deaf'
       case 'waking':
       case 'listening':
         return 'command'
@@ -311,6 +316,25 @@ export default function App() {
     store.getState().setError(message)
   }
 
+  /**
+   * Start a turn without the wake word — Space in the window, or the global
+   * push-to-talk hotkey from anywhere. Powers him up if he is off, cuts in if
+   * he is busy, and otherwise opens the microphone for a command.
+   */
+  const manualTrigger = () => {
+    const phase = store.getState().phase
+    if (phase === 'offline') {
+      void powerOn()
+    } else if (phase === 'boot') {
+      /* ignore — the boot sequence owns the phase until it finishes */
+    } else if (phase === 'thinking' || phase === 'tooling' || phase === 'speaking') {
+      onSpeechStart()
+      listen(AWAIT_SPEECH_MS)
+    } else {
+      onWake('')
+    }
+  }
+
   // -- power on -------------------------------------------------------------
 
   const powerOn = async () => {
@@ -347,12 +371,17 @@ export default function App() {
     // Must happen inside the click handler — browsers won't start an
     // AudioContext or speech synthesis without a user gesture.
     await sfx.unlockAudio()
-    sfx.play('boot')
+    // Launched into the tray at login: come up silently, with no fanfare and
+    // no boot sequence for a window nobody is looking at.
+    const quiet = Boolean(desktop?.startHidden)
+    if (!quiet) sfx.play('boot')
     // The score. Must be started from inside this click handler for the same
     // reason as the rest of the audio.
     music.enable()
-    music.playBoot()
-    music.startAmbient()
+    if (!quiet) {
+      music.playBoot()
+      music.startAmbient()
+    }
 
     s.setPhase('boot')
 
@@ -486,7 +515,7 @@ export default function App() {
     // status bar, rings, suit schematic, reactor power-up — before the live
     // interface takes over. Kept a touch under the boot cue so the music is
     // still rising as the reactor lands.
-    await new Promise((r) => setTimeout(r, 9200)) // boot sequence
+    await new Promise((r) => setTimeout(r, quiet ? 0 : 9200)) // boot sequence
     await warming
     store.getState().setConnected(connectedLabels())
     store.getState().setVoice(currentVoiceName())
@@ -658,26 +687,24 @@ export default function App() {
       // a missed wake word doesn't cost a take.
       if (e.code !== 'Space' || e.repeat) return
       e.preventDefault()
-
-      const phase = store.getState().phase
-      if (phase === 'offline') {
-        void powerOn()
-      } else if (phase === 'boot') {
-        /* ignore — the boot sequence owns the phase until it finishes */
-      } else if (
-        phase === 'thinking' ||
-        phase === 'tooling' ||
-        phase === 'speaking'
-      ) {
-        onSpeechStart()
-        listen(AWAIT_SPEECH_MS)
-      } else {
-        onWake('')
-      }
+      manualTrigger()
     }
     window.addEventListener('keydown', onKey)
 
+    // The desktop app: the global push-to-talk hotkey does exactly what Space
+    // does, from anywhere, window hidden or not; the tray can switch off
+    // listening for the wake word; and there is no ignition button to press,
+    // because the window may never have been shown.
+    const unsubscribe = [
+      desktop?.onHotkey(manualTrigger),
+      desktop?.onTray((c) => {
+        if (c.cmd === 'listening') wakeListening.current = c.value
+      }),
+    ]
+    if (desktop) void powerOn()
+
     return () => {
+      for (const off of unsubscribe) off?.()
       cancelAnimationFrame(raf)
       window.removeEventListener('keydown', onKey)
       clearIdle()
