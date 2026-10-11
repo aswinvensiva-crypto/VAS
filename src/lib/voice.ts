@@ -4,6 +4,7 @@ import { speakingNow, speakingSince } from './tts'
 import { startVad, type Vad } from './vad'
 import { caps } from './capabilities'
 import { OVERRIDE, WAKE, afterWake } from './wakeWords'
+import { desktop } from './desktop'
 
 /**
  * The voice loop.
@@ -299,7 +300,8 @@ function isEcho(heard: string, spoken: string): boolean {
  * apart in one glance.
  */
 export const diag = {
-  /** Which input engine is running: 'elevenlabs' (VAD+Scribe) or 'browser'. */
+  /** Which input engine is running: the bridge's transcriber (local Whisper
+   *  or Scribe, behind local voice detection) or the browser's own. */
   engine: 'browser',
   /** Whether the microphone pipeline is live. */
   running: false,
@@ -344,11 +346,13 @@ if (typeof window !== 'undefined') {
  * Pick the voice engine and start it.
  *
  * Two engines, chosen by what the bridge reported at boot (see capabilities.ts):
- *   - ElevenLabs available -> local voice-activity detection for instant
- *     barge-in, and ElevenLabs Scribe for the words. The reliable path.
- *   - nothing configured -> the browser's own SpeechRecognition, so a student
- *     with no keys still has a working assistant. Less robust, but free and
- *     zero-setup, and guarded by a heartbeat so its silent death is recovered.
+ *   - the bridge can transcribe (local Whisper, or Scribe with a key) -> local
+ *     voice-activity detection for instant barge-in, and the bridge for the
+ *     wake word and the words. The reliable path, and the only one in the
+ *     desktop app.
+ *   - nothing on the bridge -> the browser's own SpeechRecognition, so a plain
+ *     browser tab with nothing installed still has a working assistant. Less
+ *     robust, and absent entirely inside Electron, which has no speech service.
  *
  * The microphone is opened once here so a denied permission is reported loudly
  * rather than surfacing later as an unexplained deafness, whichever engine runs.
@@ -365,12 +369,16 @@ export async function startVoice(h: VoiceHandlers): Promise<Voice> {
     )
     return { stop: () => {}, live: () => false }
   }
-  diag.engine = caps().stt ? 'elevenlabs' : 'browser'
-  return caps().stt ? startElevenVoice(h) : startBrowserVoice(h)
+  const bridged = caps().stt || desktop !== null
+  diag.engine = bridged ? (caps().sttEngine ?? 'bridge (models missing)') : 'browser'
+  if (desktop && !caps().stt) {
+    h.onError('Voice models are not installed yet — run "npm run models", then restart VAS.')
+  }
+  return bridged ? startBridgedVoice(h) : startBrowserVoice(h)
 }
 
-/** VAD + ElevenLabs Scribe. */
-async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
+/** Local voice detection, and the bridge for the wake word and the words. */
+async function startBridgedVoice(h: VoiceHandlers): Promise<Voice> {
   let lastWake = 0
   let vad: Vad | null = null
 
@@ -417,9 +425,9 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
     if (mode === 'deaf') return
     const t0 = performance.now()
     try {
-      const res = await fetch(`${BRIDGE_HTTP_URL}/stt`, {
+      const res = await fetch(`${BRIDGE_HTTP_URL}/stt?mode=${mode}`, {
         method: 'POST',
-        headers: { 'content-type': blob.type || 'audio/webm' },
+        headers: { 'content-type': blob.type || 'audio/wav' },
         body: blob,
       })
       diag.idleMs = Math.round(performance.now() - t0)
@@ -429,9 +437,32 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
         drop(`transcription failed (${res.status})`)
         return
       }
-      const { text } = (await res.json()) as { text?: string }
-      const said = (text ?? '').trim()
-      diag.lastError = ''
+      const out = (await res.json()) as {
+        text?: string
+        /** Present when the bridge spotted the wake word itself (null: it didn't). */
+        wake?: { keyword: string; trailing: string } | null
+        reason?: string
+      }
+      const said = (out.text ?? '').trim()
+      diag.lastError = out.reason ?? ''
+
+      // The bridge's keyword spotter decides wakes when it has one: on-device,
+      // and far harder to fool than a transcript. "Hey Jarvis" on its own comes
+      // back with no words at all, so this has to happen before the empty check.
+      if (mode === 'wake' && out.wake !== undefined) {
+        if (out.wake && Date.now() - lastWake > WAKE_DEBOUNCE) {
+          lastWake = Date.now()
+          diag.wakes++
+          diag.dropped = ''
+          diag.accepted++
+          diag.heard = `[${out.wake.keyword}] ${out.wake.trailing}`
+          diag.heardAt = Date.now()
+          h.onWake(out.wake.trailing)
+        } else {
+          drop(out.wake ? 'wake word repeated too soon' : 'no wake word')
+        }
+        return
+      }
 
       if (!said) {
         drop('nothing intelligible in the segment')

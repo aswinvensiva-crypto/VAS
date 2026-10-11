@@ -18,10 +18,16 @@ import { BACKEND, BRIDGE_HTTP_URL, env } from '../config'
  */
 
 export type Capabilities = {
-  /** ElevenLabs speech-to-text (Scribe) is reachable via the bridge. */
+  /** The bridge can transcribe speech: local Whisper, or Scribe with a key. */
   stt: boolean
   /** ElevenLabs text-to-speech is reachable via the bridge. */
   tts: boolean
+  /** Which transcriber the bridge will use ('whisper-base', 'scribe', ...). */
+  sttEngine?: string | null
+  /** The bridge spots "Hey Jarvis" itself, on-device. */
+  kws?: boolean
+  /** Voice models the bridge still needs downloaded. */
+  modelsMissing?: string[]
 }
 
 /** Browser-only until the probe says otherwise. Safe default: the app works. */
@@ -56,8 +62,20 @@ export async function probeCapabilities(): Promise<Capabilities> {
       signal: AbortSignal.timeout(3000),
     })
     if (res.ok) {
-      const h = (await res.json()) as { stt?: boolean; tts?: boolean }
-      current = { stt: Boolean(h.stt), tts: Boolean(h.tts) }
+      const h = (await res.json()) as {
+        stt?: boolean
+        tts?: boolean
+        sttEngine?: string | null
+        kws?: boolean
+        modelsMissing?: string[]
+      }
+      current = {
+        stt: Boolean(h.stt),
+        tts: Boolean(h.tts),
+        sttEngine: h.sttEngine ?? null,
+        kws: Boolean(h.kws),
+        modelsMissing: h.modelsMissing ?? [],
+      }
     }
   } catch {
     // Bridge down or slow — stay on the browser engines rather than blocking
@@ -70,6 +88,7 @@ export async function probeCapabilities(): Promise<Capabilities> {
 /** A short human label for the HUD: what voice stack is actually in play. */
 export function engineLabel(): string {
   const c = current
+  if (c.sttEngine && c.sttEngine !== 'scribe') return c.tts ? `${c.sttEngine} + ElevenLabs voice` : c.sttEngine
   if (c.stt && c.tts) return 'ElevenLabs'
   if (c.tts) return 'ElevenLabs voice'
   // env.elevenKey is only meaningful in direct mode; harmless to mention.

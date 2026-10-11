@@ -23,6 +23,11 @@ import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { createPolicy, sessionTools } from './policy.mjs'
 import { dataDir } from './store/files.mjs'
+import { loadConfig } from './store/config.mjs'
+import { createVoiceEngine } from './voice/engine.mjs'
+import { handleSegment } from './voice/stt.mjs'
+import { parseWav } from './voice/wav.mjs'
+import { scribeTranscribe } from './voice/scribe.mjs'
 import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
@@ -58,6 +63,10 @@ const query =
  * loopback, and says so.
  */
 const TOKEN = process.env.JARVIS_BRIDGE_TOKEN || null
+
+/** VAS settings (%APPDATA%\VAS\data\config.json), and the local voice engine. */
+const CONFIG = await loadConfig()
+const VOICE = createVoiceEngine({ config: CONFIG })
 
 function tokenOk(presented) {
   if (!TOKEN) return true
@@ -623,14 +632,26 @@ const handleRequest = async (req, res) => {
   const pathname = new URL(req.url ?? '/', 'http://x').pathname
 
   if (req.method === 'GET' && pathname === '/health') {
-    // The browser reads this once at boot to decide which voice engine to use.
-    // Both premium paths ride the same ElevenLabs key, so both flags track it:
-    // with a key the app transcribes with Scribe and speaks with ElevenLabs;
-    // without one it falls back to the browser's own recogniser and voice, so a
-    // student with nothing configured still has a working assistant.
+    // The face reads this once at boot to decide how to listen and speak.
+    // Transcription is available when the local Whisper model is installed or
+    // an ElevenLabs key exists; the wake word when the keyword model is. The
+    // ElevenLabs voice tracks the key. With nothing at all, the browser face
+    // falls back to the browser's own recogniser and voice.
     const eleven = Boolean(elevenKey())
+    const voice = VOICE.status()
+    const sttEngine = eleven && CONFIG.stt.engine !== 'local' ? 'scribe' : voice.asr ? voice.whisper : null
     res.writeHead(200, { ...cors, 'content-type': 'application/json' })
-    return res.end(JSON.stringify({ ok: true, tts: eleven, stt: eleven }))
+    return res.end(
+      JSON.stringify({
+        ok: true,
+        tts: eleven,
+        stt: Boolean(sttEngine),
+        sttEngine,
+        kws: voice.kws,
+        modelsMissing: voice.missing,
+        user: { name: CONFIG.userName },
+      }),
+    )
   }
 
   // Serve local image files to the page. Screenshots and generated art land on
@@ -830,80 +851,68 @@ const handleRequest = async (req, res) => {
     }
   }
 
-  // Speech to text. The browser captures one spoken segment as a compressed
-  // audio blob and posts the raw bytes here; the bridge hands them to
-  // ElevenLabs Scribe and returns the transcript. This is what replaced the
-  // browser's own SpeechRecognition — that API dies silently under always-on
-  // use, and a server-side transcriber cannot. Detecting that the user is
-  // speaking at all is done locally with voice-activity detection, which never
-  // touches this endpoint; this is only for the words.
+  // Speech to text. The face posts one spoken segment — a 16 kHz WAV from its
+  // own voice-activity detector — with what it is listening for (?mode=wake,
+  // command or guard). Local keyword spotting and Whisper do the work; Scribe
+  // is used when an ElevenLabs key exists and the settings allow it. See
+  // bridge/voice/stt.mjs. Detecting that the user is speaking at all happens
+  // in the face and never touches this endpoint.
   if (req.method === 'POST' && pathname === '/stt') {
-    const key = elevenKey()
-    if (!key) {
-      res.writeHead(503, cors)
-      return res.end('no elevenlabs key')
-    }
-
-    const type = req.headers['content-type'] || 'audio/webm'
+    const mode = new URL(req.url, 'http://x').searchParams.get('mode') ?? 'command'
+    const type = String(req.headers['content-type'] || '')
     const chunks = []
     let size = 0
-    let overflowed = false
-    // A few seconds of Opus is well under a megabyte; 25 MB is a generous
-    // ceiling that still refuses a runaway stream before it eats the heap.
+    // A few seconds of 16 kHz audio is a few hundred kilobytes; 25 MB is a
+    // generous ceiling that still refuses a runaway stream before it eats the heap.
     for await (const chunk of req) {
       chunks.push(chunk)
       size += chunk.length
       if (size > 25 * 1024 * 1024) {
-        overflowed = true
-        break
+        req.destroy()
+        res.writeHead(413, cors)
+        return res.end('audio too large')
       }
     }
-    if (overflowed) {
-      req.destroy()
-      res.writeHead(413, cors)
-      return res.end('audio too large')
+    const json = (status, body) => {
+      res.writeHead(status, { ...cors, 'content-type': 'application/json' })
+      return res.end(JSON.stringify(body))
     }
-    // Silence, or a click. Nothing to transcribe, and calling out to the API
-    // for it would only add latency to a non-answer.
-    if (size < 1200) {
-      res.writeHead(200, { ...cors, 'content-type': 'application/json' })
-      return res.end(JSON.stringify({ text: '' }))
+    // Silence, or a click. Nothing to transcribe.
+    if (size < 1200) return json(200, { text: '' })
+    const audio = Buffer.concat(chunks)
+
+    if (!type.includes('wav')) {
+      // A compressed segment from an older face: only Scribe can read it.
+      const key = elevenKey()
+      if (!key) return json(415, { text: '', reason: 'send 16 kHz WAV' })
+      try {
+        return json(200, { text: await scribeTranscribe(audio, type, key, CONFIG.stt.language), engine: 'scribe' })
+      } catch (err) {
+        return json(502, { text: '', reason: String(err?.message ?? err) })
+      }
     }
 
+    let wav
     try {
-      // The filename extension is the only hint Scribe gets about the codec, so
-      // derive it from the content-type the MediaRecorder reported rather than
-      // hard-coding one.
-      const ext = type.includes('ogg')
-        ? 'ogg'
-        : type.includes('mp4') || type.includes('mpeg')
-          ? 'mp4'
-          : type.includes('wav')
-            ? 'wav'
-            : 'webm'
-      const form = new FormData()
-      form.append('model_id', 'scribe_v1')
-      form.append(
-        'file',
-        new Blob([Buffer.concat(chunks)], { type }),
-        `speech.${ext}`,
-      )
-
-      const upstream = await fetch('https://api.elevenlabs.io/v1/speech-to-text', {
-        method: 'POST',
-        headers: { 'xi-api-key': key },
-        body: form,
-      })
-      if (!upstream.ok) {
-        res.writeHead(upstream.status, cors)
-        return res.end(await upstream.text())
-      }
-      const data = await upstream.json()
-      res.writeHead(200, { ...cors, 'content-type': 'application/json' })
-      return res.end(JSON.stringify({ text: (data.text ?? '').trim() }))
+      wav = parseWav(audio)
     } catch (err) {
-      res.writeHead(502, cors)
-      return res.end(String(err?.message ?? err))
+      return json(400, { text: '', reason: err.message })
+    }
+    if (wav.sampleRate !== 16000) return json(415, { text: '', reason: 'expected 16 kHz audio' })
+    const key = elevenKey()
+    try {
+      const out = await handleSegment({
+        samples: wav.samples,
+        wav: audio,
+        mode,
+        engine: VOICE,
+        config: CONFIG,
+        scribe: key ? (buf) => scribeTranscribe(buf, 'audio/wav', key, CONFIG.stt.language) : null,
+      })
+      return json(200, out)
+    } catch (err) {
+      console.error('[jarvis] transcription failed:', err)
+      return json(500, { text: '', reason: 'transcription failed' })
     }
   }
 
@@ -974,7 +983,13 @@ server.listen(PORT, '127.0.0.1', () => {
 })
 
 console.log(
-  `[jarvis] speech ${elevenKey() ? 'via ElevenLabs (key from MCP config)' : 'using browser fallback voice'}`,
+  (() => {
+    const v = VOICE.status()
+    const ears = elevenKey() && CONFIG.stt.engine !== 'local' ? 'ElevenLabs Scribe' : v.asr ? `local ${v.whisper}` : 'none (run npm run models)'
+    const wake = v.kws ? 'on-device "Hey Jarvis"' : 'transcript match (keyword model missing)'
+    const mouth = elevenKey() ? 'ElevenLabs voice' : 'system voice'
+    return `[jarvis] hearing: ${ears} · wake word: ${wake} · speaking: ${mouth}`
+  })(),
 )
 console.log(`[jarvis] model ${MODEL} · effort ${EFFORT}`)
 console.log(

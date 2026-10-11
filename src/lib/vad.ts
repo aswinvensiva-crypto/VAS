@@ -1,4 +1,5 @@
 import { getMic } from './audio'
+import { encodeWav } from './wav'
 
 /**
  * Voice-activity detection and segment capture.
@@ -12,9 +13,15 @@ import { getMic } from './audio'
  * black box that can quietly stop answering.
  *
  * So: a running-mean noise floor, a threshold above it, and a hysteresis gate.
- * When the signal crosses the threshold a fresh recorder starts; when it falls
- * quiet for long enough the recorder stops and hands back one self-contained
- * audio blob for the bridge to transcribe. The detection is instant and local
+ * When the signal crosses the threshold a segment starts (with a little audio
+ * from just before, so the first syllable is not clipped); when it falls quiet
+ * for long enough the segment ends and is handed back as one 16 kHz WAV for
+ * the bridge to transcribe.
+ *
+ * The clock is the audio itself: an AudioWorklet delivers 20 ms frames on the
+ * audio thread, and every decision below happens per frame. It used to run on
+ * requestAnimationFrame, which stops when the window is hidden — so an
+ * assistant living in the tray went deaf the moment it was out of sight. The detection is instant and local
  * — that is what makes barge-in feel natural — and the words come back a moment
  * later from a real transcriber that cannot silently fail the way the browser
  * one did.
@@ -34,7 +41,7 @@ export type VadHandlers = {
   onEnd: (audio: Blob, ms: number) => void
   /** 0..1 smoothed input level, for the caption/orb while capturing. */
   onLevel: (v: number) => void
-  /** Capture is impossible — no microphone, or no MediaRecorder support. */
+  /** Capture is impossible — no microphone, or no audio worklet support. */
   onError: (message: string) => void
 }
 
@@ -84,19 +91,46 @@ const MAX_MS = 20000
 const FLOOR_UP = 0.0008
 const FLOOR_DOWN = 0.02
 
-function pickMime(): string {
-  const candidates = [
-    'audio/webm;codecs=opus',
-    'audio/webm',
-    'audio/ogg;codecs=opus',
-    'audio/mp4',
-  ]
-  for (const m of candidates) {
-    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(m)) {
-      return m
-    }
+/** Each frame from the capture worklet: 20 ms at 16 kHz. */
+const FRAME_MS = 20
+const RATE = 16000
+/** Audio kept from just before the onset, so the first syllable survives. */
+const PRE_ROLL_FRAMES = 15 // 300 ms
+
+const dead: Vad = {
+  stop: () => {},
+  setGuard: () => {},
+  live: () => false,
+  meter: () => ({ energy: 0, floor: 0, threshold: 0, speaking: false }),
+}
+
+/** An AudioContext at 16 kHz where the engine allows it, so nothing resamples twice. */
+function openContext(stream: MediaStream): { ctx: AudioContext; source: MediaStreamAudioSourceNode } {
+  try {
+    const ctx = new AudioContext({ sampleRate: RATE })
+    return { ctx, source: ctx.createMediaStreamSource(stream) }
+  } catch {
+    // Some engines refuse to connect a microphone to a context at another rate;
+    // run at the device rate and let the worklet decimate.
+    const ctx = new AudioContext()
+    return { ctx, source: ctx.createMediaStreamSource(stream) }
   }
-  return ''
+}
+
+function rms(frame: Float32Array): number {
+  let sum = 0
+  for (let i = 0; i < frame.length; i++) sum += frame[i] * frame[i]
+  return Math.sqrt(sum / frame.length)
+}
+
+function concat(frames: Float32Array[]): Float32Array {
+  const out = new Float32Array(frames.reduce((n, f) => n + f.length, 0))
+  let at = 0
+  for (const f of frames) {
+    out.set(f, at)
+    at += f.length
+  }
+  return out
 }
 
 export async function startVad(h: VadHandlers): Promise<Vad> {
@@ -109,25 +143,28 @@ export async function startVad(h: VadHandlers): Promise<Vad> {
         ? 'Microphone access denied — voice input is unavailable.'
         : 'No microphone available.',
     )
-    return { stop: () => {}, setGuard: () => {}, live: () => false, meter: () => ({ energy: 0, floor: 0, threshold: 0, speaking: false }) }
+    return dead
   }
 
-  if (typeof MediaRecorder === 'undefined') {
-    h.onError('This browser cannot record audio — voice input is unavailable.')
-    return { stop: () => {}, setGuard: () => {}, live: () => false, meter: () => ({ energy: 0, floor: 0, threshold: 0, speaking: false }) }
-  }
-
-  const mime = pickMime()
-  const ctx = new AudioContext()
-  // Some browsers start an AudioContext suspended even after a gesture; resume
+  const { ctx, source } = openContext(stream)
+  // Some engines start an AudioContext suspended even after a gesture; resume
   // is a no-op when it is already running.
   void ctx.resume()
-  const source = ctx.createMediaStreamSource(stream)
-  const analyser = ctx.createAnalyser()
-  analyser.fftSize = 1024
-  analyser.smoothingTimeConstant = 0.35
-  source.connect(analyser)
-  const buf = new Float32Array(analyser.fftSize)
+  try {
+    await ctx.audioWorklet.addModule('/worklets/pcm-capture.js')
+  } catch {
+    h.onError('Audio capture could not start — voice input is unavailable.')
+    void ctx.close()
+    return dead
+  }
+  const node = new AudioWorkletNode(ctx, 'vas-pcm-capture')
+  // The worklet has to be pulled by the graph to run, so it feeds a silent
+  // gain into the speakers rather than nothing at all.
+  const sink = ctx.createGain()
+  sink.gain.value = 0
+  source.connect(node)
+  node.connect(sink)
+  sink.connect(ctx.destination)
 
   let stopped = false
   let guard = false
@@ -135,76 +172,31 @@ export async function startVad(h: VadHandlers): Promise<Vad> {
   let smoothEnergy = 0
   let threshold = 0
 
-  // Segment state.
-  let recorder: MediaRecorder | null = null
-  let parts: Blob[] = []
-  let armedAt = 0 // energy first rose; recording may be pre-rolling
+  // Time, in milliseconds of audio heard — not wall-clock, so a busy main
+  // thread cannot make silence look longer or shorter than it was.
+  let t = 0
+  let armedAt = 0 // energy first rose; the segment may be pre-rolling
   let speaking = false
   let speechStartedAt = 0
   let lastLoud = 0
-  let raf = 0
-
-  const rms = (): number => {
-    analyser.getFloatTimeDomainData(buf)
-    let sum = 0
-    for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i]
-    return Math.sqrt(sum / buf.length)
-  }
-
-  const startRecorder = () => {
-    parts = []
-    try {
-      recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream)
-    } catch {
-      recorder = new MediaRecorder(stream)
-    }
-    recorder.ondataavailable = (e) => {
-      if (e.data && e.data.size) parts.push(e.data)
-    }
-    recorder.start()
-  }
-
-  const discardRecorder = () => {
-    if (!recorder) return
-    try {
-      recorder.ondataavailable = null
-      if (recorder.state !== 'inactive') recorder.stop()
-    } catch {
-      /* already gone */
-    }
-    recorder = null
-    parts = []
-  }
+  let preRoll: Float32Array[] = []
+  let segment: Float32Array[] = []
 
   const endSegment = () => {
-    const rec = recorder
+    const frames = segment
     const startedAt = speechStartedAt
+    segment = []
     speaking = false
     speechStartedAt = 0
-    if (!rec) return
-    recorder = null
-
-    const finalise = () => {
-      const type = rec.mimeType || mime || 'audio/webm'
-      const blob = new Blob(parts, { type })
-      parts = []
-      const ms = startedAt ? performance.now() - startedAt : 0
-      h.onEnd(blob, ms)
-    }
-    rec.onstop = finalise
-    try {
-      if (rec.state !== 'inactive') rec.stop()
-      else finalise()
-    } catch {
-      finalise()
-    }
+    if (!frames.length) return
+    h.onEnd(encodeWav(concat(frames), RATE), startedAt ? t - startedAt : 0)
   }
 
-  const tick = () => {
+  const onFrame = (frame: Float32Array) => {
     if (stopped) return
-    raf = requestAnimationFrame(tick)
+    t += FRAME_MS
 
-    const energy = rms()
+    const energy = rms(frame)
     smoothEnergy += (energy - smoothEnergy) * 0.5
     h.onLevel(Math.min(1, smoothEnergy * 12))
 
@@ -217,48 +209,53 @@ export async function startVad(h: VadHandlers): Promise<Vad> {
 
     threshold = floor * TRIGGER_OVER_FLOOR * (guard ? GUARD_BOOST : 1)
     const release = threshold * RELEASE_RATIO
-    const now = performance.now()
 
     if (!speaking) {
       if (smoothEnergy > threshold) {
         if (armedAt === 0) {
-          // Onset: start recording immediately so the first phoneme is captured,
-          // before we have even confirmed this is speech. If it turns out to be
-          // a blip, the recorder is discarded and nothing was lost.
-          armedAt = now
-          startRecorder()
-        } else if (now - armedAt >= START_MS) {
-          // Confirmed. This is the moment barge-in fires.
-          speaking = true
-          speechStartedAt = armedAt
-          lastLoud = now
-          h.onStart()
+          // Onset: start the segment now, with the pre-roll, before we have
+          // even confirmed this is speech. A blip is simply thrown away.
+          armedAt = t
+          segment = [...preRoll, frame]
+          preRoll = []
+        } else {
+          segment.push(frame)
+          if (t - armedAt >= START_MS) {
+            // Confirmed. This is the moment barge-in fires.
+            speaking = true
+            speechStartedAt = armedAt
+            lastLoud = t
+            h.onStart()
+          }
         }
       } else if (armedAt !== 0) {
         // Rose and fell without confirming — a knock, a click, a lip smack.
         armedAt = 0
-        discardRecorder()
+        preRoll = segment.slice(-PRE_ROLL_FRAMES)
+        segment = []
+      } else {
+        preRoll.push(frame)
+        if (preRoll.length > PRE_ROLL_FRAMES) preRoll.shift()
       }
     } else {
-      if (smoothEnergy > release) lastLoud = now
-      const quietFor = now - lastLoud
-      const runFor = now - speechStartedAt
-      if (quietFor >= SILENCE_MS || runFor >= MAX_MS) {
+      segment.push(frame)
+      if (smoothEnergy > release) lastLoud = t
+      if (t - lastLoud >= SILENCE_MS || t - speechStartedAt >= MAX_MS) {
         armedAt = 0
         endSegment()
       }
     }
   }
 
-  tick()
+  node.port.onmessage = (e: MessageEvent<Float32Array>) => onFrame(e.data)
 
   return {
     stop: () => {
       stopped = true
-      cancelAnimationFrame(raf)
-      discardRecorder()
+      node.port.onmessage = null
       try {
         source.disconnect()
+        node.disconnect()
         void ctx.close()
       } catch {
         /* noop */

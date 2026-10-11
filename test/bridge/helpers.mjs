@@ -1,5 +1,5 @@
-import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { execFileSync, spawn } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -55,4 +55,33 @@ export async function startBridge({ token = 'test-token-0123456789abcdef', env =
       rmSync(dir, { recursive: true, force: true })
     },
   }
+}
+
+/**
+ * Speak `phrases` with a Windows SAPI voice into 16 kHz mono WAV files.
+ * Returns { name: path } or null where speech synthesis is unavailable.
+ */
+export function synthesize(phrases) {
+  if (process.platform !== 'win32') return null
+  const dir = mkdtempSync(join(tmpdir(), 'vas-say-'))
+  const spec = join(dir, 'spec.json')
+  writeFileSync(spec, JSON.stringify({ dir, phrases }))
+  const script = join(dir, 'say.ps1')
+  writeFileSync(
+    script,
+    `$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Speech
+$spec = Get-Content -Raw -LiteralPath $args[0] | ConvertFrom-Json
+$s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$fmt = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo(16000, [System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen, [System.Speech.AudioFormat.AudioChannel]::Mono)
+foreach ($p in $spec.phrases.PSObject.Properties) {
+  $s.SetOutputToWaveFile((Join-Path $spec.dir ($p.Name + '.wav')), $fmt); $s.Speak($p.Value); $s.SetOutputToNull()
+}`,
+  )
+  try {
+    execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, spec], { windowsHide: true, stdio: 'ignore' })
+  } catch {
+    return null
+  }
+  return Object.fromEntries(Object.keys(phrases).map((k) => [k, join(dir, `${k}.wav`)]))
 }
