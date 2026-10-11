@@ -52,8 +52,21 @@ import { join } from 'node:path'
  * `userInfo().username` rather than $USER, which is unset under launchd — and a
  * bridge started from a login item is exactly the case where a wrong guess
  * would look like the extension being uninstalled.
+ *
+ * On Windows there is no /tmp socket: the host listens on a named pipe of the
+ * same name, `\\.\pipe\claude-mcp-browser-bridge-<user>`. Same framing, same
+ * protocol — only the address differs.
  */
-const SOCKET_DIR = `/tmp/claude-mcp-browser-bridge-${userInfo().username}`
+const SOCKET_NAME = `claude-mcp-browser-bridge-${userInfo().username}`
+const SOCKET_DIR = `/tmp/${SOCKET_NAME}`
+const PIPE_DIR = '\\\\.\\pipe\\'
+
+/**
+ * Who we say we are to the native host. Not Claude Code's own id, so the host
+ * never mistakes VAS for the user's coding session and hands it that
+ * session's tab group.
+ */
+const CLIENT_ID = process.env.JARVIS_CHROME_CLIENT_ID || 'vas'
 
 /**
  * How long a single browser action may take.
@@ -82,6 +95,7 @@ const CONNECT_TIMEOUT_MS = 3_000
  * accepted as a last resort, because on some setups it is all there is.
  */
 async function findSocket() {
+  if (process.platform === 'win32') return findPipe()
   let names
   try {
     names = await readdir(SOCKET_DIR)
@@ -105,6 +119,27 @@ async function findSocket() {
 }
 
 /**
+ * The Windows equivalent: list the pipe namespace rather than opening the pipe
+ * to see whether it exists, because opening one can use up an instance the
+ * real client then has to wait for. Pipe names are case-insensitive.
+ *
+ * @param {(dir: string) => Promise<string[]>} [list] injectable for tests
+ */
+export async function findPipe(list = readdir) {
+  let names
+  try {
+    names = await list(PIPE_DIR)
+  } catch {
+    return null
+  }
+  const want = SOCKET_NAME.toLowerCase()
+  const hit =
+    names.find((n) => n.toLowerCase() === want) ??
+    names.find((n) => n.toLowerCase().startsWith(want))
+  return hit ? `${PIPE_DIR}${hit}` : null
+}
+
+/**
  * One connection, one request in flight.
  *
  * The wire protocol carries no request id — a reply is simply the next frame —
@@ -113,8 +148,10 @@ async function findSocket() {
  * the browser is a single visible window doing one thing at a time, and the
  * model is watching each result before deciding the next action anyway.
  */
-class ChromeLink {
-  constructor() {
+export class ChromeLink {
+  /** @param {() => Promise<string|null>} [find] where to connect; tests pass their own */
+  constructor(find = findSocket) {
+    this.find = find
     this.socket = null
     this.path = null
     /** Tail of the current request chain, so calls queue rather than collide. */
@@ -167,7 +204,7 @@ class ChromeLink {
 
   async ensureConnected() {
     if (this.socket && !this.socket.destroyed) return
-    const path = await findSocket()
+    const path = await this.find()
     if (!path) {
       throw new Error(
         'The Claude browser extension is not running on this machine. ' +
@@ -244,7 +281,10 @@ class ChromeLink {
    */
   call(name, args) {
     const run = async () => {
-      const message = { method: 'execute_tool', params: { tool: name, args: args ?? {} } }
+      const message = {
+        method: 'execute_tool',
+        params: { client_id: CLIENT_ID, tool: name, args: args ?? {} },
+      }
       try {
         return await this.request(message)
       } catch (err) {
