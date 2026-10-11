@@ -37,6 +37,7 @@ import { parseWav } from './voice/wav.mjs'
 import { scribeTranscribe } from './voice/scribe.mjs'
 import { loadSpeaker } from './voice/speaker.mjs'
 import { createEnrollment } from './voice/enroll.mjs'
+import { fetchModels, MODELS, status as modelStatus } from './voice/models.mjs'
 import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
@@ -96,6 +97,32 @@ const voiceCheck = () => {
   const fresh = Date.now() - HEARD.at < 30_000
   return { verdict: fresh ? HEARD.verdict : 'unknown', ownerRecently: Date.now() - HEARD.ownerAt < 60_000 }
 }
+/**
+ * Downloading the voice models, from the face's "Download voice models"
+ * button — never on its own. One download at a time; the face polls progress.
+ */
+const DOWNLOAD = { running: false, progress: null, error: null, done: false }
+/** What a first install needs; Whisper small is an optional upgrade. */
+const ESSENTIAL_MODELS = ['kws', 'whisper-base', 'speaker']
+function startModelDownload(names) {
+  if (DOWNLOAD.running) return
+  Object.assign(DOWNLOAD, { running: true, progress: null, error: null, done: false })
+  fetchModels(names, (p) => {
+    DOWNLOAD.progress = p
+  })
+    .then(() => {
+      // The keyword file can only be written once the model is there.
+      VOICE.setConfig(CONFIG)
+      DOWNLOAD.done = true
+    })
+    .catch((err) => {
+      DOWNLOAD.error = err.message
+    })
+    .finally(() => {
+      DOWNLOAD.running = false
+    })
+}
+
 const ENROLL = createEnrollment({
   engine: VOICE,
   onChange: () => {
@@ -817,6 +844,21 @@ const handleRequest = async (req, res) => {
       console.error('[jarvis] transcription failed:', err)
       return json(500, { text: '', reason: 'transcription failed' })
     }
+  }
+
+  if (pathname === '/models/status' && req.method === 'GET') {
+    const installed = await modelStatus()
+    const missing = ESSENTIAL_MODELS.filter((m) => !installed[m])
+    const bytes = missing.reduce((n, m) => n + MODELS[m].size, 0)
+    res.writeHead(200, { ...cors, 'content-type': 'application/json' })
+    return res.end(JSON.stringify({ installed, missing, bytes, ...DOWNLOAD }))
+  }
+  if (pathname === '/models/fetch' && req.method === 'POST') {
+    const installed = await modelStatus()
+    const want = ESSENTIAL_MODELS.filter((m) => !installed[m])
+    if (want.length) startModelDownload(want)
+    res.writeHead(202, { ...cors, 'content-type': 'application/json' })
+    return res.end(JSON.stringify({ started: want }))
   }
 
   if (pathname.startsWith('/voice/')) {

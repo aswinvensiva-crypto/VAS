@@ -5,6 +5,7 @@ import { Boot } from './ui/Boot'
 import { Ignition } from './ui/Ignition'
 import { Diagnostics } from './ui/Diagnostics'
 import { Enroll } from './ui/Enroll'
+import { ModelsBanner } from './ui/ModelsBanner'
 import { useStore } from './store'
 import { startVoice, type Voice, type VoiceMode } from './lib/voice'
 import { createSpeaker, cycleVoice, currentVoiceName, speakingNow } from './lib/tts'
@@ -817,6 +818,7 @@ export default function App() {
       <Diagnostics />
       <Ignition onStart={() => void powerOn()} />
       <Enroll />
+      <ModelsBanner />
     </>
   )
 }

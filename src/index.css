@@ -1967,3 +1967,32 @@ kbd {
   color: #cfeff0;
   font: inherit;
 }
+
+/* First run: the voice models are not installed yet. */
+.models-banner {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 45;
+  width: min(520px, calc(100vw - 32px));
+  padding: 14px 18px;
+  border: 1px solid rgba(92, 242, 239, 0.45);
+  background: rgba(2, 10, 14, 0.9);
+  color: #cfeff0;
+  font: 500 14px/1.5 ui-monospace, monospace;
+  text-align: center;
+}
+.models-banner button {
+  pointer-events: auto;
+  cursor: pointer;
+  margin-top: 10px;
+  padding: 6px 16px;
+  border: 1px solid rgba(92, 242, 239, 0.6);
+  background: rgba(92, 242, 239, 0.12);
+  color: #e8ffff;
+  font: inherit;
+}
+.models-progress { margin: 10px auto 4px; height: 4px; width: 80%; background: rgba(92, 242, 239, 0.15); }
+.models-progress > div { height: 100%; background: #5cf2ef; }
+.models-file { font-size: 11px; opacity: 0.7; }

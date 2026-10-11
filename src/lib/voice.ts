@@ -375,7 +375,7 @@ export async function startVoice(h: VoiceHandlers): Promise<Voice> {
   const bridged = caps().stt || desktop !== null
   diag.engine = bridged ? (caps().sttEngine ?? 'bridge (models missing)') : 'browser'
   if (desktop && !caps().stt) {
-    h.onError('Voice models are not installed yet — run "npm run models", then restart VAS.')
+    h.onError('Voice models are not installed yet — use the Download button.')
   }
   return bridged ? startBridgedVoice(h) : startBrowserVoice(h)
 }
