@@ -1,5 +1,13 @@
 import { create } from 'zustand'
 
+/** The permission gate's question, as the HUD shows it. */
+export type ConfirmPrompt = {
+  id: string
+  prompt: string
+  /** Answer it: a click, or the words heard (judged on the bridge). */
+  answer: (a: { source: 'click' | 'voice'; approved?: boolean; text?: string }) => void
+}
+
 export type Phase =
   | 'offline'   // waiting for the click that unlocks audio
   | 'boot'      // startup sequence
@@ -9,6 +17,7 @@ export type Phase =
   | 'thinking'  // model is generating
   | 'tooling'   // an MCP tool is running
   | 'speaking'  // reading the answer back
+  | 'confirming' // asked "shall I?" and waiting for a yes or no
 
 /**
  * A card on the heads-up display.
@@ -219,6 +228,8 @@ type State = {
   turns: Turn[]
   activeTool: string | null
   error: string | null
+  /** A pending "shall I?" from the permission gate, with how to answer it. */
+  confirm: ConfirmPrompt | null
   connected: string[]
   /** Name of the speech-synthesis voice in use, shown in the HUD. */
   voice: string
@@ -257,6 +268,7 @@ type State = {
   setCaption: (c: string) => void
   setActiveTool: (t: string | null) => void
   setError: (e: string | null) => void
+  setConfirm: (c: ConfirmPrompt | null) => void
   setConnected: (c: string[]) => void
   pushTurn: (t: Turn) => void
   appendToLastTurn: (text: string) => void
@@ -277,6 +289,7 @@ export const useStore = create<State>((set) => ({
   turns: [],
   activeTool: null,
   error: null,
+  confirm: null,
   connected: [],
   voice: '',
   gestures: false,
@@ -351,6 +364,7 @@ export const useStore = create<State>((set) => ({
   setCaption: (caption) => set({ caption }),
   setActiveTool: (activeTool) => set({ activeTool }),
   setError: (error) => set({ error }),
+  setConfirm: (confirm) => set({ confirm }),
   setConnected: (connected) => set({ connected }),
   pushTurn: (turn) => set((s) => ({ turns: [...s.turns.slice(-40), turn] })),
   appendToLastTurn: (text) =>
@@ -425,6 +439,7 @@ export const phaseColor: Record<Phase, string> = {
   thinking: '#f0a93c',
   tooling: '#a97bff',
   speaking: '#3ef2a8',
+  confirming: '#ffc933',
 }
 
 /**

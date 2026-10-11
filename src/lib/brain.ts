@@ -84,6 +84,14 @@ export function watchCapture(
   if (usingBridge) bridge.watchCapture(fn)
 }
 
+/** The permission gate asking before an action; bridge-only, like the camera. */
+export function watchConfirm(
+  ask: (req: bridge.ConfirmRequest) => Promise<bridge.ConfirmAnswer>,
+  cancel: (id: string) => void,
+): void {
+  if (usingBridge) bridge.watchConfirm(ask, cancel)
+}
+
 /**
  * Barge-in. Stops the answer on both paths and settles whatever `ask()` call
  * is outstanding, so the caller's await always returns — on the bridge by

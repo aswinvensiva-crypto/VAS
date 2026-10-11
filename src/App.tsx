@@ -6,7 +6,7 @@ import { Ignition } from './ui/Ignition'
 import { Diagnostics } from './ui/Diagnostics'
 import { useStore } from './store'
 import { startVoice, type Voice, type VoiceMode } from './lib/voice'
-import { createSpeaker, cycleVoice, currentVoiceName } from './lib/tts'
+import { createSpeaker, cycleVoice, currentVoiceName, speakingNow } from './lib/tts'
 import * as sfx from './lib/sfx'
 import * as music from './lib/music'
 import * as hands from './lib/hands'
@@ -23,6 +23,7 @@ import {
   watchPanels,
   watchBlades,
   watchCapture,
+  watchConfirm,
   watchUi,
   watchConnection,
   connectedLabels,
@@ -36,6 +37,7 @@ import { env } from './config'
 // as "travis" gets that word sent on to the model as a question.
 import { BARE_NAME, LEADING_NAME } from './lib/wakeWords'
 import { desktop } from './lib/desktop'
+import type { ConfirmAnswer, ConfirmRequest } from './lib/bridge'
 
 /**
  * The conversation.
@@ -84,6 +86,10 @@ export default function App() {
    *  ignored; the hotkey and Space still start a turn, because those are an
    *  explicit request rather than something overheard. */
   const wakeListening = useRef(true)
+  /** The permission gate's open question, if any, and how to settle it. */
+  const pendingConfirm = useRef<{ id: string; finish: (a: ConfirmAnswer) => void } | null>(null)
+  /** Speaks the question, separately from the turn's own voice. */
+  const confirmVoice = useRef<ReturnType<typeof createSpeaker> | null>(null)
   const voicePoll = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // -- helpers --------------------------------------------------------------
@@ -99,6 +105,7 @@ export default function App() {
   }
 
   const goDormant = () => {
+    pendingConfirm.current?.finish({ source: 'voice', cancelled: true })
     clearIdle()
     silence()
     turn.current++
@@ -231,6 +238,10 @@ export default function App() {
       case 'waking':
       case 'listening':
         return 'command'
+      case 'confirming':
+        // Raised guard while the question is being spoken, so it is not heard
+        // as its own answer; then wide open for the yes or no.
+        return speakingNow() ? 'guard' : 'command'
       default:
         return 'guard' // thinking, tooling, speaking
     }
@@ -271,6 +282,12 @@ export default function App() {
     clearIdle()
     const phase = store.getState().phase
     if (phase === 'offline' || phase === 'boot' || phase === 'dormant') return
+    // Answering "shall I?" must not cut off the turn that is waiting for the
+    // answer — only the question's own voice stops.
+    if (phase === 'confirming') {
+      confirmVoice.current?.cancel()
+      return
+    }
 
     const wasBusy =
       phase === 'thinking' || phase === 'tooling' || phase === 'speaking'
@@ -292,6 +309,11 @@ export default function App() {
   const onUtterance = (text: string) => {
     const phase = store.getState().phase
     if (phase === 'offline' || phase === 'boot' || phase === 'dormant') return
+    if (pendingConfirm.current) {
+      // The raw words go back; the bridge decides what they mean.
+      pendingConfirm.current.finish({ source: 'voice', text })
+      return
+    }
 
     // People keep using his name as a vocative once they're already talking to
     // him. Strip it rather than sending "jarvis" to the model as a question.
@@ -317,12 +339,55 @@ export default function App() {
   }
 
   /**
+   * The permission gate asking before JARVIS acts.
+   *
+   * The turn that wants to act is paused on the bridge, waiting for this. The
+   * question is spoken and shown with Confirm / Cancel; the next thing said is
+   * the answer (straight through, unassembled), and silence past the timeout
+   * is a no. Afterwards the interface goes back to the turn in progress.
+   */
+  const askConfirm = (req: ConfirmRequest) =>
+    new Promise<ConfirmAnswer>((resolve) => {
+      pendingConfirm.current?.finish({ source: 'voice', cancelled: true })
+      const s = store.getState()
+      const resumeTo = s.phase === 'confirming' ? 'thinking' : s.phase
+      let settled = false
+      const finish = (a: ConfirmAnswer) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        confirmVoice.current?.cancel()
+        confirmVoice.current = null
+        pendingConfirm.current = null
+        store.getState().setConfirm(null)
+        if (store.getState().phase === 'confirming') store.getState().setPhase(resumeTo)
+        resolve(a)
+      }
+      const timer = setTimeout(() => finish({ source: 'voice', cancelled: true }), req.timeoutMs)
+      pendingConfirm.current = { id: req.id, finish }
+      clearIdle()
+      s.setConfirm({ id: req.id, prompt: req.prompt, answer: (a) => finish(a) })
+      s.setPhase('confirming')
+      sfx.play('listen')
+      const q = createSpeaker()
+      confirmVoice.current = q
+      q.say(req.prompt)
+      void q.end()
+    })
+
+  const cancelConfirm = (id: string) => {
+    const p = pendingConfirm.current
+    if (p && (id === '*' || id === p.id)) p.finish({ source: 'voice', cancelled: true })
+  }
+
+  /**
    * Start a turn without the wake word — Space in the window, or the global
    * push-to-talk hotkey from anywhere. Powers him up if he is off, cuts in if
    * he is busy, and otherwise opens the microphone for a command.
    */
   const manualTrigger = () => {
     const phase = store.getState().phase
+    if (phase === 'confirming') return // answer the question first
     if (phase === 'offline') {
       void powerOn()
     } else if (phase === 'boot') {
@@ -388,6 +453,7 @@ export default function App() {
     watchServers((servers) => store.getState().setConnected(servers))
     watchPanels((panel) => store.getState().pushPanel(panel))
     watchBlades((blade) => store.getState().pushBlade(blade))
+    watchConfirm(askConfirm, cancelConfirm)
 
     /**
      * JARVIS asking to see something.
@@ -546,6 +612,7 @@ export default function App() {
       onPartial,
       onUtterance,
       onError: onVoiceError,
+      urgent: () => pendingConfirm.current !== null,
     })
 
     store.getState().setPhase('dormant')
@@ -679,6 +746,10 @@ export default function App() {
       // no key for at all.
       if (e.key === 'Escape') {
         e.preventDefault()
+        if (pendingConfirm.current) {
+          pendingConfirm.current.finish({ source: 'click', approved: false })
+          return
+        }
         if (store.getState().phase !== 'offline') goDormant()
         return
       }

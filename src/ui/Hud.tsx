@@ -16,6 +16,7 @@ const statusText: Record<Phase, string> = {
   thinking: 'PROCESSING',
   tooling: 'ACCESSING SYSTEMS',
   speaking: 'RESPONDING',
+  confirming: 'AWAITING YOUR OK',
 }
 
 function Corner({ at }: { at: 'tl' | 'tr' | 'bl' | 'br' }) {
@@ -149,6 +150,7 @@ function DecodeText({ text }: { text: string }) {
 export function Hud() {
   const phase = useStore((s) => s.phase)
   const caption = useStore((s) => s.caption)
+  const confirm = useStore((s) => s.confirm)
   const turns = useStore((s) => s.turns)
   const activeTool = useStore((s) => s.activeTool)
   const connected = useStore((s) => s.connected)
@@ -307,6 +309,21 @@ export function Hud() {
       <Blades />
 
       {ui.chrome.suggestions && <Suggestions />}
+
+      {confirm && (
+        <div className="confirm-card" role="alertdialog" aria-label="JARVIS is asking for your permission">
+          <div className="confirm-prompt">{confirm.prompt}</div>
+          <div className="confirm-hint">say yes or no</div>
+          <div className="confirm-actions">
+            <button type="button" onClick={() => confirm.answer({ source: 'click', approved: true })}>
+              Confirm
+            </button>
+            <button type="button" onClick={() => confirm.answer({ source: 'click', approved: false })}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {error && <div className="error">{error}</div>}
 

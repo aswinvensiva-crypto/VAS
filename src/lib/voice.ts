@@ -51,6 +51,9 @@ export type VoiceHandlers = {
   onUtterance: (text: string) => void
   /** The recogniser is unusable. Distinct from the user saying nothing. */
   onError: (message: string) => void
+  /** While true, every utterance goes straight through unassembled — a yes
+   *  or no to "shall I?" is complete the moment it is said. */
+  urgent?: () => boolean
 }
 
 export type Voice = {
@@ -489,6 +492,13 @@ async function startBridgedVoice(h: VoiceHandlers): Promise<Voice> {
         } else {
           drop(`heard "${said.slice(-40)}" — not his name`)
         }
+        return
+      }
+
+      if (h.urgent?.()) {
+        diag.dropped = ''
+        diag.accepted++
+        h.onUtterance(said)
         return
       }
 

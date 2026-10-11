@@ -590,7 +590,76 @@ be clicked. Use chrome_page_text instead when you only want the prose.`
 /**
  * @param {{ allowWrites: boolean }} options
  */
-export function chromeServer({ allowWrites }) {
+/** Where a tab is, as a host name — read from the browser, not from the model. */
+async function tabHost(tab) {
+  try {
+    const reply = await link.call('tabs_context_mcp', { createIfEmpty: false })
+    for (const block of reply?.result?.content ?? []) {
+      if (block?.type !== 'text') continue
+      try {
+        const parsed = JSON.parse(block.text)
+        const hit = (parsed?.availableTabs ?? []).find((t) => t.tabId === tab)
+        if (hit?.url) return new URL(hit.url).host.replace(/^www\./, '')
+      } catch {
+        /* the prose block */
+      }
+    }
+  } catch {
+    /* the browser went away; the caller says "the page" */
+  }
+  return null
+}
+
+/** The page's own label for an element ref, e.g. 'button "Send"'. */
+async function refLabel(tab, ref) {
+  if (!ref) return null
+  try {
+    const reply = await link.call('read_page', { tabId: tab, filter: 'interactive' })
+    const text = (reply?.result?.content ?? []).map((b) => (b?.type === 'text' ? b.text : '')).join('\n')
+    const line = text.split('\n').find((l) => l.includes(`[${ref}]`))
+    if (!line) return null
+    return line.replace(/\[ref_\d+\]/g, '').replace(/\s+/g, ' ').trim().slice(0, 60)
+  } catch {
+    return null
+  }
+}
+
+const preview = (v) => {
+  const t = String(v ?? '').replace(/\s+/g, ' ').trim()
+  return t.length > 40 ? `${t.slice(0, 40)}…` : t
+}
+
+/**
+ * The question to ask before acting on a page, written from facts the bridge
+ * reads itself: which site the tab is on, what the page calls the element,
+ * what would be typed. Never from the model's own account of what it is about
+ * to do — a page it has just read could have talked it into describing a
+ * "Send" button as something harmless.
+ */
+async function describeAction(kind, args) {
+  const tab = await resolveTab(args.tabId).catch(() => null)
+  const where = (tab !== null && (await tabHost(tab))) || 'the page'
+  const what = kind === 'click' || kind === 'form' ? await refLabel(tab, args.ref) : null
+  switch (kind) {
+    case 'click':
+      return `Click ${what ?? 'there'} on ${where}?`
+    case 'type':
+      return `Type "${preview(args.text)}" on ${where}?`
+    case 'key':
+      return `Press ${preview(args.text)} on ${where}?`
+    case 'form':
+      return `Set ${what ?? 'that field'} to "${preview(args.value)}" on ${where}?`
+    case 'close':
+      return `Close the ${where} tab?`
+    default:
+      return `Act on ${where}?`
+  }
+}
+
+/**
+ * @param {{ allowWrites: boolean, gate?: { check: Function } | null }} options
+ */
+export function chromeServer({ allowWrites, gate = null }) {
   const tools = [
     tool(
       'chrome_status',
@@ -756,15 +825,29 @@ export function chromeServer({ allowWrites }) {
   /**
    * The acting half.
    *
-   * These are withheld by default, and the reason is specific to what this
-   * server is: it is pointed at a browser that is signed in to the user's mail,
-   * their bank and their employer. A misheard sentence that merely reads a page
-   * is a wasted turn; a misheard sentence that clicks a button on a page that
-   * is already authenticated is something else. The gate is the same one the
-   * rest of the bridge uses, so a user who has decided to trust it turns both
-   * on together.
+   * This browser is signed in to the user's mail, their bank and their
+   * employer. A misheard sentence that merely reads a page is a wasted turn; a
+   * misheard sentence that clicks a button on a page that is already
+   * authenticated is something else. So every action here is put to the user
+   * first — spoken, answered by voice or a click, and judged by the permission
+   * gate — unless they started VAS with --writes, which trusts it outright.
+   * Without a gate (no one to ask) the acting tools are not offered at all.
    */
-  if (allowWrites) {
+  const guarded = (kind, run) => async (args) => {
+    if (!allowWrites) {
+      const prompt = await describeAction(kind, args ?? {})
+      const verdict = await gate.check('chrome.act', { prompt, args: { tool: kind } })
+      if (!verdict.allowed) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Not done — ${verdict.reason} Say so in a few words; do not try again unless asked.` }],
+        }
+      }
+    }
+    return run(args ?? {})
+  }
+
+  if (allowWrites || gate) {
     tools.push(
       tool(
         'chrome_click',
@@ -780,21 +863,21 @@ export function chromeServer({ allowWrites }) {
             .describe('[x, y] fallback when there is no ref.'),
           tabId,
         },
-        async (args) => forward('computer')({ action: 'left_click', ...args }),
+        guarded('click', (args) => forward('computer')({ action: 'left_click', ...args })),
       ),
 
       tool(
         'chrome_type',
         'Type text into whatever is focused. Click the field first.',
         { text: z.string(), tabId },
-        async (args) => forward('computer')({ action: 'type', ...args }),
+        guarded('type', (args) => forward('computer')({ action: 'type', ...args })),
       ),
 
       tool(
         'chrome_key',
         `Press a key or chord, e.g. "Return", "Escape", "${process.platform === 'darwin' ? 'cmd' : 'ctrl'}+a".`,
         { text: z.string().describe('The key to press.'), tabId },
-        async (args) => forward('computer')({ action: 'key', ...args }),
+        guarded('key', (args) => forward('computer')({ action: 'key', ...args })),
       ),
 
       tool(
@@ -806,7 +889,7 @@ export function chromeServer({ allowWrites }) {
           value: z.union([z.string(), z.number(), z.boolean()]),
           tabId,
         },
-        forward('form_input'),
+        guarded('form', forward('form_input')),
       ),
 
       tool(
@@ -829,11 +912,11 @@ export function chromeServer({ allowWrites }) {
             .union([z.number(), z.string()])
             .describe('The numeric tabId to close, from chrome_tabs.'),
         },
-        async (args) => {
+        guarded('close', async (args) => {
           const out = await forward('tabs_close_mcp', { needsTab: false })(args)
           if (Number(args.tabId) === activeTab) activeTab = null
           return out
-        },
+        }),
       ),
     )
   }
@@ -844,8 +927,9 @@ export function chromeServer({ allowWrites }) {
     instructions:
       "The user's own Chrome, already signed in to everything they use. " +
       'Reach for it when the answer is behind a login or has to be seen on a ' +
-      'real page. Reading is free; acting on a page is not, so say what you ' +
-      'are doing before you do anything that changes something.',
+      'real page. Reading is free. Clicking, typing and closing tabs are put ' +
+      'to the user as a spoken yes-or-no by the tools themselves, so do not ask ' +
+      'them yourself first — just call the tool.',
     // Behind tool search the model would never think to look, and "open my
     // GitHub notifications" would quietly become a web search instead.
     alwaysLoad: true,

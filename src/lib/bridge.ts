@@ -36,6 +36,9 @@ type Frame = {
   seconds?: number
   when?: string
   servers?: Array<string | { name?: string }>
+  prompt?: string
+  action?: string
+  timeoutMs?: number
 }
 
 /** Every question gets an id so its answer can be told from anyone else's. */
@@ -82,6 +85,25 @@ export type CaptureResult = { data?: string; mimeType?: string; error?: string }
 let onCapture: ((req: CaptureRequest) => Promise<CaptureResult>) | null = null
 export function watchCapture(fn: (req: CaptureRequest) => Promise<CaptureResult>) {
   onCapture = fn
+}
+
+/**
+ * The permission gate asking before JARVIS acts: "Shall I close Spotify?".
+ *
+ * Like the camera, this is the bridge asking the face and holding a turn open
+ * for the answer, so it is always answered — with the words the user said
+ * (judged on the bridge), a click, or a cancellation.
+ */
+export type ConfirmRequest = { id: string; prompt: string; action: string; timeoutMs: number }
+export type ConfirmAnswer = { text?: string; source: 'voice' | 'click'; approved?: boolean; cancelled?: boolean }
+let onConfirm: ((req: ConfirmRequest) => Promise<ConfirmAnswer>) | null = null
+let onConfirmCancel: ((id: string) => void) | null = null
+export function watchConfirm(
+  ask: (req: ConfirmRequest) => Promise<ConfirmAnswer>,
+  cancel: (id: string) => void,
+) {
+  onConfirm = ask
+  onConfirmCancel = cancel
 }
 
 /** Blades arrive the same way panels do — pushed mid-turn, so the article is
@@ -204,6 +226,27 @@ function dispatch(ws: WebSocket) {
           .then(reply)
           .catch((err) => reply({ error: String(err?.message ?? err) }))
       }
+    } else if (msg.type === 'confirm' && msg.id) {
+      const id = msg.id
+      const reply = (payload: Record<string, unknown>) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'reply', id, ...payload }))
+        }
+      }
+      if (!onConfirm) {
+        reply({ cancelled: true })
+      } else {
+        onConfirm({
+          id,
+          prompt: msg.prompt ?? 'Shall I go ahead?',
+          action: msg.action ?? '',
+          timeoutMs: Math.max(5000, Math.min(60000, Number(msg.timeoutMs) || 25000)),
+        })
+          .then(reply)
+          .catch(() => reply({ cancelled: true }))
+      }
+    } else if (msg.type === 'confirm_cancel') {
+      onConfirmCancel?.(msg.id ?? '*')
     } else if (msg.type === 'ui' && msg.op) {
       // A `ui` frame with no args is normal — reset and clear take none — so an
       // absent args object is an empty one, not a reason to drop the command.

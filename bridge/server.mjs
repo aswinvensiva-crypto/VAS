@@ -22,6 +22,7 @@ import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { createPolicy, sessionTools } from './policy.mjs'
+import { createGate } from './gate.mjs'
 import { dataDir } from './store/files.mjs'
 import { loadConfig } from './store/config.mjs'
 import { createVoiceEngine } from './voice/engine.mjs'
@@ -1003,7 +1004,7 @@ console.log(
 void chromeAvailable().then((ok) => {
   console.log(
     ok
-      ? `[jarvis] browser control ready${ALLOW_WRITES ? '' : ' (reading only — clicking and typing need --writes)'}`
+      ? `[jarvis] browser control ready${ALLOW_WRITES ? ' (acting freely — --writes)' : ' (reading is free; clicking and typing ask first)'}`
       : '[jarvis] browser control unavailable — open Chrome with the Claude extension enabled',
   )
 })
@@ -1096,9 +1097,27 @@ wss.on('connection', (socket) => {
         waiting.delete(id)
         reject(new Error('the interface did not answer in time'))
       }, timeoutMs)
-      waiting.set(id, { resolve, timer })
+      waiting.set(id, { resolve, timer, kind })
       send({ type: kind, id, ...args })
     })
+
+  /**
+   * The permission gate for this connection. Its questions travel as 'confirm'
+   * asks; cancelling settles every open one as "cancelled" and tells the face
+   * to take the question down.
+   */
+  const gate = createGate({
+    ask,
+    cancel: () => {
+      for (const [id, slot] of waiting) {
+        if (slot.kind !== 'confirm') continue
+        waiting.delete(id)
+        clearTimeout(slot.timer)
+        slot.resolve({ cancelled: true })
+        send({ type: 'confirm_cancel', id })
+      }
+    },
+  })
 
   /**
    * Announcing a tool on the HUD, once, and only if it actually runs.
@@ -1198,7 +1217,7 @@ wss.on('connection', (socket) => {
         // The user's own Chrome, over the extension's native-host socket. It
         // holds no per-connection state, but it is built here with the rest so
         // the write gate is read once, at the same point as everything else.
-        jarvis_chrome: chromeServer({ allowWrites: ALLOW_WRITES }),
+        jarvis_chrome: chromeServer({ allowWrites: ALLOW_WRITES, gate }),
         // The camera, which unlike everything else here has to ask and wait.
         jarvis_eyes: visionServer(ask),
       },
@@ -1447,6 +1466,8 @@ wss.on('connection', (socket) => {
     }
 
     if (msg.type === 'interrupt') {
+      // Standing down or barging in withdraws any "shall I?" still open.
+      gate.abortAll()
       // Held so the next question can wait for it rather than racing it.
       const stopped = turnFinished()
       settling = Promise.resolve(session.interrupt?.())
@@ -1461,6 +1482,7 @@ wss.on('connection', (socket) => {
   })
 
   socket.on('close', () => {
+    gate.abortAll()
     console.log('[jarvis] client disconnected')
     closed = true
     deliver?.(null)
