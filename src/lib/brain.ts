@@ -1,5 +1,4 @@
 import { BACKEND } from '../config'
-import * as direct from './anthropic'
 import * as bridge from './bridge'
 import type { AskHandlers, Msg } from './anthropic'
 import type { Blade, Panel } from '../store'
@@ -22,6 +21,25 @@ export type { ConnectionState } from './bridge'
 
 export const usingBridge = BACKEND === 'bridge'
 
+/**
+ * The direct path, loaded only when it is built in at all.
+ *
+ * `__VAS_DIRECT__` is a build-time constant (vite.config.ts), false unless the
+ * face is built with VAS_DIRECT=1. When false the bundler drops this import, so
+ * the Anthropic browser client — and any API key it would carry — never ships
+ * in the desktop app.
+ */
+type Direct = typeof import('./anthropic')
+let directModule: Promise<Direct> | null = null
+let directLabels: string[] = []
+const loadDirect = (): Promise<Direct> =>
+  (directModule ??= __VAS_DIRECT__
+    ? import('./anthropic').then((d) => {
+        directLabels = d.connectedLabels()
+        return d
+      })
+    : Promise.reject(new Error('Direct mode is not built into this app.')))
+
 /** Conversation state lives in the bridge session, so history is only threaded
  *  through on the direct path. */
 export async function ask(
@@ -31,7 +49,7 @@ export async function ask(
 ): Promise<{ text: string; tools: string[]; after?: string }> {
   return usingBridge
     ? bridge.ask(prompt, handlers)
-    : direct.ask([...history, { role: 'user', content: prompt }], handlers)
+    : (await loadDirect()).ask([...history, { role: 'user', content: prompt }], handlers)
 }
 
 export async function warm(): Promise<void> {
@@ -105,7 +123,7 @@ export function watchApp(fn: (op: string) => void): void {
  */
 export function cancel(): void {
   if (usingBridge) bridge.cancel()
-  else direct.cancel()
+  else void loadDirect().then((d) => d.cancel(), () => {})
 }
 
 /** The older name for `cancel()`. */
@@ -140,5 +158,5 @@ export function watchConnection(
 
 /** Labels for the HUD's SYSTEMS rail. */
 export function connectedLabels(): string[] {
-  return usingBridge ? bridge.bridgeServers() : direct.connectedLabels()
+  return usingBridge ? bridge.bridgeServers() : directLabels
 }

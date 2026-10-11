@@ -9,3 +9,6 @@ models/
 *.log
 .env*
 !.env.example
+
+# graphify knowledge-graph output (built on demand, not part of the app)
+graphify-out/

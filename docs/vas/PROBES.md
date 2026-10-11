@@ -43,3 +43,19 @@ enrolled from three clips the owner scores 0.54–0.82 and the other voice
 length-aware thresholds plus an "unknown" band, as planned; short clips are
 the weak case, which is why a confirmation also leans on the owner verdict of
 the command that triggered it.
+
+## Native runtime dependencies (installer)
+
+The plan asked the installer to check for the Visual C++ runtime. The DLLs VAS
+ships were inspected for the names they import (2026-10-11):
+
+| File | Imports |
+|---|---|
+| `sherpa-onnx.node` | KERNEL32, node.dll, sherpa-onnx-c-api.dll |
+| `sherpa-onnx-c-api.dll` | ADVAPI32, KERNEL32, onnxruntime.dll |
+| `onnxruntime.dll` | ADVAPI32, KERNEL32, SETUPAPI, dbghelp, dxcore, dxgi, api-ms-win-core-path |
+
+None import `vcruntime140.dll` or `msvcp140.dll`: the C runtime is linked in
+statically. Electron and `claude.exe` carry their own. So no VC++
+redistributable check is needed in the installer; if a future sherpa-onnx
+build starts importing it, this table is the thing to re-check.

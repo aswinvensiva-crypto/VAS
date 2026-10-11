@@ -46,6 +46,9 @@ export function startBridgeHost({ root }) {
 
   let child = null
   let stopping = false
+  // Whether the window is off screen, re-sent to every bridge that starts so a
+  // restart does not forget it (the camera asks first while hidden).
+  let windowHidden = process.argv.includes('--hidden')
   let failures = 0
   const listeners = new Set()
 
@@ -60,6 +63,10 @@ export function startBridgeHost({ root }) {
           JARVIS_BRIDGE_PORT: String(state.port || 0),
           ...(claudeExe ? { JARVIS_CLAUDE_EXE: claudeExe } : {}),
           ...(app.isPackaged ? { JARVIS_APP_ONLY: '1' } : {}),
+          // For the bridge's watchdog: if this process dies without tearing the
+          // bridge down, the bridge notices and exits on its own.
+          JARVIS_PARENT_PID: String(process.pid),
+          ...(windowHidden ? { JARVIS_START_HIDDEN: '1' } : {}),
         },
       })
       const stamp = () => new Date().toISOString()
@@ -95,6 +102,15 @@ export function startBridgeHost({ root }) {
     start: spawn,
     /** Called after every (re)start; `moved` means the port changed. */
     onListening: (fn) => listeners.add(fn),
+    /** Tell the bridge whether the window is on screen. */
+    setWindowHidden: (hidden) => {
+      windowHidden = Boolean(hidden)
+      try {
+        child?.postMessage({ type: 'window', hidden: windowHidden })
+      } catch {
+        /* between restarts; the next spawn gets it from the environment */
+      }
+    },
     restart: () => {
       child?.kill()
     },

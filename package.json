@@ -11,6 +11,7 @@
   },
   "scripts": {
     "start": "node scripts/start.mjs",
+    "web": "node scripts/start.mjs",
     "dev": "node scripts/dev-app.mjs",
     "dev:web": "vite",
     "app": "npm run build && electron .",
@@ -18,8 +19,8 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "bridge": "node bridge/server.mjs",
-    "bridge:writes": "node bridge/server.mjs --writes",
+    "bridge": "node bridge/server.mjs --insecure-dev",
+    "bridge:writes": "node bridge/server.mjs --writes --insecure-dev",
     "setup": "node scripts/setup.mjs",
     "probe:chrome": "node scripts/probe-chrome.mjs",
     "models": "node scripts/fetch-models.mjs",

@@ -67,10 +67,37 @@ Describe what you saw as a sequence — what changed between the frames — rath
 than listing them. The user knows what their own hands look like.`
 
 /**
+ * The camera while nobody can see the VAS window asks first (tier
+ * camera.hidden): the light comes on either way, but a hidden window means the
+ * user may not be looking at the machine at all.
+ *
+ * @param {{ gate?: { check: Function }, hidden?: () => boolean }} [opts]
+ * @returns {(what: string) => Promise<null | object>} null when the camera may
+ *   be used now, otherwise the tool result to return instead
+ */
+export function cameraGate({ gate, hidden } = {}) {
+  return async function cameraRefused(what) {
+    if (!gate || !hidden?.()) return null
+    const verdict = await gate.check('camera.hidden', {
+      prompt: `VAS is hidden. Use the camera to ${what}?`,
+    })
+    if (verdict.allowed) return null
+    return {
+      isError: true,
+      content: [{ type: 'text', text: `${verdict.reason} Tell the user in one short sentence.` }],
+    }
+  }
+}
+
+/**
  * @param {(kind: string, args: object) => Promise<object>} ask
  *   Sends a request to the browser and resolves with its reply.
+ * @param {{ gate?: { check: Function }, hidden?: () => boolean }} [opts]
+ *   The permission gate, and whether the VAS window is off screen.
  */
-export function visionServer(ask) {
+export function visionServer(ask, opts = {}) {
+  const cameraRefused = cameraGate(opts)
+
   return createSdkMcpServer({
     name: 'jarvis_eyes',
     version: '1.0.0',
@@ -94,6 +121,8 @@ export function visionServer(ask) {
             ),
         },
         async (args) => {
+          const refused = await cameraRefused('take a picture')
+          if (refused) return refused
           let reply
           try {
             reply = await ask('capture', { reason: String(args.reason ?? '').slice(0, 80) })
@@ -163,6 +192,8 @@ export function visionServer(ask) {
             .describe('A few words on what you are watching for, shown on screen.'),
         },
         async (args) => {
+          const refused = await cameraRefused('watch for a few seconds')
+          if (refused) return refused
           let reply
           try {
             reply = await ask(

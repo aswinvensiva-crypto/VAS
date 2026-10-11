@@ -69,10 +69,21 @@ const query =
  * can claim any Origin it likes. The desktop app generates a fresh token at
  * every launch and presents it on every request (a header for HTTP, a
  * subprotocol for the socket), so only the window it opened can drive JARVIS.
- * Without one — the browser dev setup — the bridge still only listens on
- * loopback, and says so.
+ *
+ * Running without one is only for the browser debug setup (npm start), and it
+ * has to be asked for by name with --insecure-dev: a missing variable is a
+ * mistake, not a mode, and an unauthenticated bridge must never be what a
+ * mistake produces.
  */
 const TOKEN = process.env.JARVIS_BRIDGE_TOKEN || null
+const INSECURE_DEV = process.argv.includes('--insecure-dev')
+if (!TOKEN && !INSECURE_DEV) {
+  console.error(
+    '[jarvis] refusing to start: JARVIS_BRIDGE_TOKEN is not set. The VAS app sets it; ' +
+      'for browser debugging run `npm start`, which starts the bridge with --insecure-dev.',
+  )
+  process.exit(1)
+}
 
 /** VAS settings (%APPDATA%\VAS\data\config.json), and the local voice engine. */
 const CONFIG = await loadConfig()
@@ -300,7 +311,27 @@ function configuredServers() {
 const MCP_SERVERS = configuredServers()
 
 
-const SYSTEM_PROMPT = buildSystemPrompt({ userName: CONFIG.userName })
+/**
+ * The system prompt, built when a conversation starts so it carries what VAS
+ * knows about this PC at that moment: the apps the user has let JARVIS open,
+ * the routines they taught, and the mishearings it has learned. Read straight
+ * from memory and one small file, so starting a session stays instant.
+ */
+function systemPromptNow() {
+  let apps = []
+  try {
+    const saved = JSON.parse(readFileSync(join(dataDir(), 'apps.json'), 'utf8'))
+    apps = Object.values(saved.allow ?? {}).map((a) => a?.name).filter(Boolean)
+  } catch {
+    /* nothing allowed yet */
+  }
+  const routines = BRAIN.userSynapses()
+    .map((s) => s.signals?.[0]?.order)
+    .map((o) => (typeof o === 'string' ? o : o?.text))
+    .filter(Boolean)
+  const corrections = CORRECTIONS.list().map(({ heard, meant }) => ({ heard, meant }))
+  return buildSystemPrompt({ userName: CONFIG.userName, apps, routines, corrections })
+}
 
 /**
  * ElevenLabs credentials, borrowed from the MCP server config.
@@ -941,13 +972,58 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(
     TOKEN
       ? '[jarvis] session token required on every request'
-      : '[jarvis] no session token set — loopback only, local dev mode',
+      : '[jarvis] INSECURE DEV MODE: no session token — any program on this PC can drive JARVIS',
   )
   // The desktop app starts the bridge as a utility/child process and waits
   // for this before it opens the window.
   const listening = { type: 'listening', port: PORT }
   process.parentPort?.postMessage(listening)
   process.send?.(listening)
+})
+
+/**
+ * Leaving cleanly: every open conversation closed (which stops its claude.exe),
+ * then the process. Used for signals and for the watchdog below.
+ */
+let shuttingDown = false
+function shutdown(why) {
+  if (shuttingDown) return
+  shuttingDown = true
+  console.log(`[jarvis] shutting down: ${why}`)
+  for (const client of wss.clients) client.close(1001, 'bridge shutting down')
+  server.close()
+  setTimeout(() => process.exit(0), 500).unref()
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))
+
+/**
+ * Watchdog. If VAS is killed outright (Task Manager, a crash) nothing tells
+ * this process, and it would sit on its port with a Claude session open. So
+ * look for the parent every few seconds and leave when it is gone. The app
+ * passes its own pid; anything else that starts the bridge is watched by ppid.
+ */
+const PARENT_PID = Number(process.env.JARVIS_PARENT_PID) || process.ppid
+if (PARENT_PID > 0) {
+  setInterval(() => {
+    try {
+      process.kill(PARENT_PID, 0)
+    } catch (err) {
+      if (err?.code === 'ESRCH') shutdown(`parent ${PARENT_PID} is gone`)
+    }
+  }, 5_000).unref()
+}
+
+/**
+ * Whether the VAS window is on screen. The main process says so on every
+ * show/hide (the face cannot tell: backgroundThrottling is off so JARVIS keeps
+ * listening, which also pins document.visibilityState to "visible"). Used to
+ * ask before the camera is used while nobody can see the window.
+ */
+let WINDOW_HIDDEN = process.env.JARVIS_START_HIDDEN === '1'
+process.parentPort?.on('message', (event) => {
+  const msg = event?.data
+  if (msg?.type === 'window') WINDOW_HIDDEN = Boolean(msg.hidden)
 })
 
 console.log(
@@ -1037,9 +1113,15 @@ wss.on('connection', (socket) => {
    * id the client sent lets it ignore anything that is not its own, which is
    * the only reliable fix: no amount of waiting on this side changes what a
    * listener over there has already heard.
+   *
+   * A queue, not a single slot: a second question can reach the agent while
+   * it is still answering the first, and the agent answers them in order, one
+   * `result` each. With one slot the second id overwrote the first and the
+   * rest of the first answer went out tagged as the second. The head of the
+   * queue is the turn being produced; each `result` retires it.
    */
-  let answering = null
-  const sendTurn = (msg) => send({ ...msg, ask: answering })
+  const turnIds = []
+  const sendTurn = (msg) => send({ ...msg, ask: turnIds[0] ?? null })
 
   /**
    * Asking the browser for something and waiting for the answer.
@@ -1094,7 +1176,7 @@ wss.on('connection', (socket) => {
    */
   function deliverToClaude(text, id) {
     startSession()
-    answering = id
+    turnIds.push(id)
     const message = localTurns.takeLog() + text
     if (deliver) {
       const resolve = deliver
@@ -1237,7 +1319,7 @@ wss.on('connection', (socket) => {
           // the write gate is read once, at the same point as everything else.
           jarvis_chrome: chromeServer({ allowWrites: ALLOW_WRITES, gate }),
           // The camera, which unlike everything else here has to ask and wait.
-          jarvis_eyes: visionServer(ask),
+          jarvis_eyes: visionServer(ask, { gate, hidden: () => WINDOW_HIDDEN }),
           // Apps and sites through the catalog and the permission gate, for the
           // requests no fixed order matches ("can you get WhatsApp up?").
           jarvis_neurons: neuronsServer(() => localTurns.toolContext()),
@@ -1246,7 +1328,7 @@ wss.on('connection', (socket) => {
         // tuned for a coding agent — verbose, file-oriented, and a large chunk
         // of input tokens on every turn. Replacing it makes the persona stick,
         // keeps answers short enough to speak, and cuts cost per turn.
-        systemPrompt: SYSTEM_PROMPT,
+        systemPrompt: systemPromptNow(),
         cwd: WORKSPACE,
         // Built-in tools: search and planning only, unless --writes. Removing a
         // tool from the model's context is stronger than refusing it in
@@ -1406,6 +1488,7 @@ wss.on('connection', (socket) => {
               }
               // Whatever was waiting on this turn to finish can go now. This is
               // the only place a turn is genuinely over.
+              turnIds.shift()
               finishTurn?.()
               finishTurn = null
               // One turn's tool ids are never referred to again, and these

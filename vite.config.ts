@@ -4,6 +4,12 @@ import react from '@vitejs/plugin-react'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  define: {
+    // Direct mode (the browser calling the Claude API with a key in the bundle)
+    // is compiled in only on request: VAS_DIRECT=1 npm run dev:web. Everything
+    // else — and every desktop build — leaves it out entirely.
+    __VAS_DIRECT__: JSON.stringify(process.env.VAS_DIRECT === '1'),
+  },
   server: {
     // Honour PORT so a second instance can run alongside the first. The bridge
     // only accepts sockets from localhost:5173-5199, so stay inside that range

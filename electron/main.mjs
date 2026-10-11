@@ -147,6 +147,10 @@ function createWindow() {
     win.hide()
   })
 
+  // The bridge asks before using the camera while nobody can see the window.
+  const reportVisibility = () => bridge?.setWindowHidden(!win.isVisible() || win.isMinimized())
+  for (const event of ['show', 'hide', 'minimize', 'restore']) win.on(event, reportVisibility)
+
   void win.loadURL(DEV_URL ?? `${APP_ORIGIN}/index.html`)
 }
 

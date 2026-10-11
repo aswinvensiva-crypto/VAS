@@ -92,7 +92,10 @@ vendorWasm()
 console.log('\nVAS: starting JARVIS — the brain and the face.\n')
 // The same node that is running this launcher, rather than whichever `node`
 // happens to be first on PATH.
-run('bridge', process.execPath, [join(ROOT, 'bridge/server.mjs')], '36', bridgeEnv)
+// Browser debugging has no window to hand the bridge a session token, so it
+// runs without one, explicitly. Never how the VAS app runs.
+console.log('\x1b[33mBrowser debug mode: the bridge runs with --insecure-dev (no session token).\x1b[0m')
+run('bridge', process.execPath, [join(ROOT, 'bridge/server.mjs'), '--insecure-dev'], '36', bridgeEnv)
 // npm is a shell script on most systems; call the vite binary directly so we do
 // not need shell:true (which would break the argument handling above).
 run('face', process.execPath, [join(ROOT, 'node_modules/vite/bin/vite.js')], '35', {})

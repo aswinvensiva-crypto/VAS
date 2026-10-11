@@ -60,11 +60,13 @@ function flag(name: string, raw: unknown, fallback: boolean): boolean {
  *              deploys as a static site, but it needs VITE_ANTHROPIC_API_KEY in
  *              the bundle and only reaches remote HTTP MCP servers.
  */
-export const BACKEND: 'bridge' | 'direct' = desktop
-  ? // The desktop app always talks to its own bridge. Direct mode would mean
-    // an API key compiled into the window, which a desktop app must never ship.
-    'bridge'
-  : choice('VITE_BACKEND', import.meta.env.VITE_BACKEND, ['bridge', 'direct'] as const, 'bridge')
+export const BACKEND: 'bridge' | 'direct' =
+  desktop || !__VAS_DIRECT__
+    ? // The desktop app always talks to its own bridge. Direct mode would mean
+      // an API key compiled into the window, which a desktop app must never
+      // ship — so it is not even built in unless VAS_DIRECT=1 (vite.config.ts).
+      'bridge'
+    : choice('VITE_BACKEND', import.meta.env.VITE_BACKEND, ['bridge', 'direct'] as const, 'bridge')
 
 /**
  * Where the bridge lives. Derived once here rather than in each of the three
@@ -135,11 +137,12 @@ export const KOKORO_VOICE = choice(
 )
 
 export const env = {
-  anthropicKey: str(import.meta.env.VITE_ANTHROPIC_API_KEY) ?? '',
+  // Only read when direct mode is built in; otherwise the bundler drops the
+  // branch and the key never reaches the bundle.
+  anthropicKey: __VAS_DIRECT__ ? (str(import.meta.env.VITE_ANTHROPIC_API_KEY) ?? '') : '',
   elevenKey: str(import.meta.env.VITE_ELEVENLABS_API_KEY) ?? '',
   elevenVoiceId:
     str(import.meta.env.VITE_ELEVENLABS_VOICE_ID) ?? 'JBFqnCBsd6RMkjVDRZzb',
-  porcupineKey: str(import.meta.env.VITE_PICOVOICE_ACCESS_KEY) ?? '',
 }
 
 /** `claude-opus-5` is the strongest model; `claude-sonnet-5` trades a little
@@ -152,18 +155,6 @@ export const MODEL = 'claude-opus-5'
  * For a recorded demo the snappiness is worth it; flip to false to save money.
  */
 export const FAST_MODE = true
-
-/**
- * Wake-word engine.
- *   'speech'    — zero setup, uses the browser's SpeechRecognition to listen for
- *                 "hey jarvis". Chrome/Edge only, audio goes to Google.
- *   'porcupine' — recommended. Runs offline in WASM, "Jarvis" is a built-in
- *                 keyword, far fewer false triggers. Needs a free AccessKey
- *                 from console.picovoice.ai.
- */
-export const WAKE_ENGINE: 'speech' | 'porcupine' = env.porcupineKey
-  ? 'porcupine'
-  : 'speech'
 
 // ---------------------------------------------------------------------------
 // MCP servers

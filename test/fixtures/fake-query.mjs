@@ -10,7 +10,12 @@ import { writeFileSync } from 'node:fs'
  * Only the shape of the options is recorded: functions and server instances
  * are reduced to their type, and env to its variable names, so no secret is
  * ever written to disk by a test.
+ *
+ * JARVIS_FAKE_SDK_DELAY_MS pauses mid-answer, the way a real turn spends
+ * seconds between its first and last words, so tests can land a second
+ * question while the first is still being answered.
  */
+const DELAY_MS = Number(process.env.JARVIS_FAKE_SDK_DELAY_MS) || 0
 function describe(options) {
   return {
     ...options,
@@ -36,7 +41,12 @@ export function query({ prompt, options }) {
       const text = typeof content === 'string' ? content : JSON.stringify(content)
       yield {
         type: 'stream_event',
-        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: `echo: ${text}` } },
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'echo: ' } },
+      }
+      if (DELAY_MS) await new Promise((r) => setTimeout(r, DELAY_MS))
+      yield {
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text } },
       }
       yield { type: 'result', subtype: 'success', result: `echo: ${text}`, total_cost_usd: 0 }
     }

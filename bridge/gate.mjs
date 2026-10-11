@@ -101,6 +101,10 @@ export function parseConfirm(text) {
 export function createGate({ ask, cancel = () => {}, audit = defaultAudit, owner = () => ({ verdict: 'unenrolled' }) }) {
   let queue = Promise.resolve()
   const pending = new Set()
+  // Bumped by abortAll. A question still waiting its turn in the queue when
+  // the user interrupts must never be asked afterwards, so each one notes the
+  // generation it was queued in and stands down if that has passed.
+  let generation = 0
 
   /** Ask one question, at most twice; resolves to { answer, source, owner }. */
   async function confirm({ prompt, action, subject }) {
@@ -160,7 +164,9 @@ export function createGate({ ask, cancel = () => {}, audit = defaultAudit, owner
     }
 
     // One question at a time: a second gated action waits for the first.
+    const queuedIn = generation
     const turn = queue.then(async () => {
+      if (queuedIn !== generation) return { answer: 'cancelled', source: 'none' }
       const id = Symbol(action)
       pending.add(id)
       try {
@@ -201,8 +207,13 @@ export function createGate({ ask, cancel = () => {}, audit = defaultAudit, owner
 
   return {
     check,
-    /** Drop every pending question (interrupt, disconnect, standing down). */
+    /**
+     * Drop every pending question (interrupt, disconnect, standing down): the
+     * one on screen is cancelled, and any still queued behind it are never
+     * asked.
+     */
     abortAll() {
+      generation++
       cancel('*')
       pending.clear()
     },
