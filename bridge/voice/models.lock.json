@@ -2,5 +2,17 @@
   "sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2": {
     "size": 32885699,
     "sha256": "68447f4fbc67e70eee3a93961f36e81e98f47aef73ce7e7ca00885c6cd3616a6"
+  },
+  "3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx": {
+    "size": 29596978,
+    "sha256": "357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b"
+  },
+  "sherpa-onnx-whisper-base.tar.bz2": {
+    "size": 207557382,
+    "sha256": "911b2083efd7c0dca2ac3b358b75222660dc09fb716d64fbfc417ba6c99ff3de"
+  },
+  "sherpa-onnx-whisper-small.tar.bz2": {
+    "size": 639387718,
+    "sha256": "486a46afbb7ba798507190ffe02fea2dd726049af212e774537efac6afb210a6"
   }
 }

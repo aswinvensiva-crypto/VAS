@@ -16,19 +16,65 @@
  */
 
 import { WebSocketServer } from 'ws'
-import { query } from '@anthropic-ai/claude-agent-sdk'
+import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk'
 import { displayServer } from './panels.mjs'
 import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
+import { createPolicy, sessionTools } from './policy.mjs'
+import { dataDir } from './store/files.mjs'
 import { homedir, tmpdir } from 'node:os'
-import { readFileSync, realpathSync } from 'node:fs'
+import { mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
+import { timingSafeEqual } from 'node:crypto'
 import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
 import { probeUrl, renderPage } from './page.mjs'
 
-const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
+/**
+ * Which port to listen on. 0 asks the OS for a free one, which is what the
+ * desktop app does; the real port is read back once the server is listening.
+ */
+let PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
+
+/**
+ * The SDK entry point. Tests swap in a fake that records the options and
+ * echoes text back, so the bridge's own behaviour can be checked without
+ * spending a Claude turn.
+ */
+const query =
+  process.env.JARVIS_FAKE_SDK === '1'
+    ? (await import('../test/fixtures/fake-query.mjs')).query
+    : sdkQuery
+
+/**
+ * A shared secret for this run, handed to the bridge by whoever started it.
+ *
+ * The Origin header keeps other web pages out, but any program on this machine
+ * can claim any Origin it likes. The desktop app generates a fresh token at
+ * every launch and presents it on every request (a header for HTTP, a
+ * subprotocol for the socket), so only the window it opened can drive JARVIS.
+ * Without one — the browser dev setup — the bridge still only listens on
+ * loopback, and says so.
+ */
+const TOKEN = process.env.JARVIS_BRIDGE_TOKEN || null
+
+function tokenOk(presented) {
+  if (!TOKEN) return true
+  if (typeof presented !== 'string') return false
+  const a = Buffer.from(presented)
+  const b = Buffer.from(TOKEN)
+  return a.length === b.length && timingSafeEqual(a, b)
+}
+
+/** The token as the socket presents it: one of its offered subprotocols. */
+function socketToken(req) {
+  const offered = String(req.headers['sec-websocket-protocol'] ?? '')
+    .split(',')
+    .map((s) => s.trim())
+  const entry = offered.find((p) => p.startsWith('vas.token.'))
+  return entry ? entry.slice('vas.token.'.length) : null
+}
 
 /**
  * A crash here takes the whole assistant down mid-sentence, and most of what
@@ -74,8 +120,12 @@ const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]'])
 const isDevPort = (port) =>
   (port >= 5173 && port <= 5199) || (port >= 4173 && port <= 4199)
 
+/** The desktop app serves the face from its own privileged scheme. */
+const APP_ORIGIN = 'app://vas'
+
 function originAllowed(origin) {
   if (!origin) return ALLOW_NO_ORIGIN
+  if (origin.replace(/\/+$/, '') === APP_ORIGIN) return true
   if (EXTRA_ORIGINS.has(origin.replace(/\/+$/, ''))) return true
   let url
   try {
@@ -99,6 +149,8 @@ function originAllowed(origin) {
 const ALLOW_WRITES =
   process.env.JARVIS_ALLOW_WRITES === '1' || process.argv.includes('--writes')
 
+const { decideTool } = createPolicy({ allowWrites: ALLOW_WRITES })
+
 /**
  * The orchestrator model. Override with JARVIS_MODEL to trade quality for pace
  * — claude-sonnet-5 is noticeably snappier on camera if Opus feels slow.
@@ -120,27 +172,17 @@ const MODEL = process.env.JARVIS_MODEL ?? 'claude-opus-5'
  * matters more than pace; drop back to 'low' when filming and every second of
  * dead air shows.
  */
-const EFFORT = process.env.JARVIS_EFFORT ?? 'high'
+const EFFORT = process.env.JARVIS_EFFORT ?? 'medium'
 
 /**
- * Both spellings of every renamed built-in are listed on purpose. The SDK
- * presents several tools to the model under newer names — Task is Agent,
- * BashOutput is TaskOutput, KillShell is TaskStop, and the MCP resource tools
- * gained a "Tool" suffix — so a set holding only the old names never matches
- * and the tool falls through to the write branch, which is the opposite of
- * what these lists mean. Keep both until the old names are certainly gone.
+ * Where the agent runs. Its own empty folder rather than the home directory:
+ * file tools are switched off by default anyway (see sessionTools), and if
+ * --writes turns them back on, an empty working folder is a far better place
+ * for a misheard instruction to land than the root of the user's files.
  */
-const READ_ONLY_BUILTINS = new Set([
-  'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'TodoWrite',
-  'Task', 'Agent', 'ToolSearch',
-  'ListMcpResources', 'ListMcpResourcesTool',
-  'ReadMcpResource', 'ReadMcpResourceTool',
-  'BashOutput', 'TaskOutput',
-])
-const WRITE_BUILTINS = new Set([
-  'Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit',
-  'KillShell', 'TaskStop',
-])
+const WORKSPACE = join(dataDir(), 'workspace')
+mkdirSync(WORKSPACE, { recursive: true })
+
 
 /**
  * Every MCP server Claude Code has configured, read out of its own config.
@@ -183,120 +225,6 @@ function configuredServers() {
 
 const MCP_SERVERS = configuredServers()
 
-/** MCP tools arrive as `mcp__<server>__<tool>`. */
-const mcpServerOf = (toolName) =>
-  toolName.startsWith('mcp__') ? toolName.split('__')[1] : null
-
-/** The tool half, which can itself contain underscores: `mcp__x__a__b` -> `a__b`. */
-const mcpToolOf = (toolName) => toolName.split('__').slice(2).join('__')
-
-/**
- * MCP policy, and why it is shaped this way.
- *
- * A short list of "servers that can change things" is the wrong default,
- * because it is a list of what we happened to think of. Every server not on it
- * runs unconditionally — and on a real machine that quietly includes placing a
- * phone call, spending an advertising budget, deleting a generated character
- * and writing files to disk. A voice assistant cannot ask "are you sure", so
- * the bridge has to be the one that is sure.
- *
- * So the default is deny, softened in two ways so the demo stays usable:
- *
- *   1. READ_ONLY_MCP is an explicit allowlist of servers whose whole surface is
- *      lookups and generation — search, registries, analytics reads. Anything
- *      there runs in read-only mode.
- *   2. Everywhere else, the tool has to argue for itself: its own name must
- *      begin with a read verb. `list_devices` runs; `install_apk` does not.
- *
- * On top of both sits a veto: a name containing a plainly effectful verb needs
- * ALLOW_WRITES no matter which server it came from, which is what keeps
- * `make_outbound_call` and `download_lottie` still until you ask for them.
- */
-const READ_ONLY_MCP = new Set([
-  'exa', 'exa-code', 'serper', 'serpapi', 'lottie-search', 'mcp-registry',
-  'openrouter', 'openrouter-image', 'Microsoft_Clarity',
-  // The generation servers belong here too, and leaving them out was a real
-  // regression: `generate_image` begins with no read verb, so it fell to the
-  // deny branch and "generate an image of the Mark VII suit" — the headline
-  // demo — stopped working in the default mode.
-  //
-  // Putting them on the allowlist is safe because the veto below still applies
-  // to allowlisted servers: it is what continues to withhold
-  // make_outbound_call, delete_character, create_* and edit_image. Generation
-  // runs; acting on the world does not.
-  'higgsfield', 'heygen', 'elevenlabs',
-])
-
-/**
- * Anchored on the tool name, so it reads the verb rather than the noun.
- * `screenshot` is in here because it is a read that doesn't sound like one,
- * and the persona is told in as many words to put screenshots on the display.
- */
-const READ_VERB =
-  /^(get|list|read|search|find|query|fetch|check|describe|inspect|show|view|explain|screenshot)/i
-
-/**
- * Unanchored on purpose — `make_outbound_call` and `Bulk-Edit-Events` both
- * hide their verb in the middle. `download` is here because it writes a file
- * even though it sounds like a read.
- */
-const EFFECTFUL_VERB =
-  /(send|call|post|create|delete|remove|update|edit|write|install|launch|tap|swipe|press|type|buy|pay|charge|publish|deploy|outbound|download)/i
-
-/**
- * Tools whose names trip the veto without deserving it.
- *
- * The veto reads verbs out of names, which is the right instinct and
- * occasionally the wrong answer. `openrouter send-message` sends a prompt to a
- * language model and gets text back — nothing in the world changes — but it is
- * indistinguishable by name from sending mail. Asking a second model a question
- * is one of the better things this assistant can do, so it is named here
- * instead of being lost to a regex.
- *
- * Full `server__tool` keys, so an exemption can never leak across servers.
- */
-const VETO_EXEMPT = new Set([
-  'openrouter__send-message',
-  'openrouter__send-feedback',
-])
-
-function decideTool(name) {
-  if (READ_ONLY_BUILTINS.has(name)) return true
-  if (WRITE_BUILTINS.has(name)) return ALLOW_WRITES
-
-  const server = mcpServerOf(name)
-  if (server) {
-    // The HUD, and the interface controls beside it. Both run in this process
-    // and draw on our own screen, so neither is something to withhold —
-    // without them JARVIS has no display at all. They also have to be named
-    // here rather than left to the verb rules below, which read `ui_theme` as
-    // a write and would hold the whole surface back behind ALLOW_WRITES.
-    if (server === 'jarvis' || server === 'jarvis_ui') return true
-
-    // The browser server gates itself, at construction: chromeServer() only
-    // builds the acting tools — click, type, form input, close tab — when
-    // ALLOW_WRITES is set, so anything that reaches here at all is something
-    // the same policy has already permitted. Deciding it a second time by
-    // reading verbs out of the name would only get it wrong: `chrome_navigate`
-    // begins with no read verb and would fall to the write branch, which would
-    // withhold the one tool the whole server is for.
-    if (server === 'jarvis_chrome') return true
-
-    // The camera. Not withheld behind ALLOW_WRITES: looking changes nothing,
-    // and the real gate is the browser's own camera permission plus an
-    // indicator the user can see for as long as it is live.
-    if (server === 'jarvis_eyes') return true
-
-    const tool = mcpToolOf(name)
-    if (EFFECTFUL_VERB.test(tool) && !VETO_EXEMPT.has(`${server}__${tool}`)) {
-      return ALLOW_WRITES
-    }
-    // The session tools this bridge is developed inside count as read-only too.
-    if (READ_ONLY_MCP.has(server) || server.startsWith('ccd_session')) return true
-    return READ_VERB.test(tool) ? true : ALLOW_WRITES
-  }
-  return ALLOW_WRITES
-}
 
 const SYSTEM_PROMPT = `You are JARVIS. You are speaking out loud to one person.
 
@@ -663,7 +591,7 @@ function corsFor(req) {
   const headers = { vary: 'origin' }
   if (origin) {
     headers['access-control-allow-origin'] = origin
-    headers['access-control-allow-headers'] = 'content-type'
+    headers['access-control-allow-headers'] = 'content-type, x-vas-token'
   }
   return headers
 }
@@ -685,7 +613,16 @@ const handleRequest = async (req, res) => {
     return res.end()
   }
 
-  if (req.method === 'GET' && req.url === '/health') {
+  if (!tokenOk(req.headers['x-vas-token'])) {
+    res.writeHead(401, { vary: 'origin' })
+    return res.end('unauthorized')
+  }
+
+  // Routes are matched on the path alone, so a query string never turns a real
+  // endpoint into a 404.
+  const pathname = new URL(req.url ?? '/', 'http://x').pathname
+
+  if (req.method === 'GET' && pathname === '/health') {
     // The browser reads this once at boot to decide which voice engine to use.
     // Both premium paths ride the same ElevenLabs key, so both flags track it:
     // with a key the app transcribes with Scribe and speaks with ElevenLabs;
@@ -699,7 +636,7 @@ const handleRequest = async (req, res) => {
   // Serve local image files to the page. Screenshots and generated art land on
   // disk as absolute paths, and a page served over http can't read file:// —
   // so the bridge, which can, hands them over.
-  if (req.method === 'GET' && req.url?.startsWith('/file?')) {
+  if (req.method === 'GET' && pathname === '/file') {
     const asked = new URL(req.url, 'http://x').searchParams.get('path') ?? ''
     // Resolve symlinks BEFORE judging anything. A name ending in .png can be a
     // link pointing at /etc/hosts, and checking the suffix the caller supplied
@@ -743,7 +680,7 @@ const handleRequest = async (req, res) => {
 
   // Remote images, fetched here so the page never talks to the wider web. The
   // renderer rewrites every http(s) <img src> in a panel to this endpoint.
-  if (req.method === 'GET' && req.url?.startsWith('/img?')) {
+  if (req.method === 'GET' && pathname === '/img') {
     try {
       await proxyRemote(req, res, cors, {
         kinds: ['image/'],
@@ -761,7 +698,7 @@ const handleRequest = async (req, res) => {
 
   // The same, for video and audio. Separate from /img because the limits and
   // the Range handling are genuinely different, not because the code is.
-  if (req.method === 'GET' && req.url?.startsWith('/media?')) {
+  if (req.method === 'GET' && pathname === '/media') {
     try {
       await proxyRemote(req, res, cors, {
         kinds: ['video/', 'audio/'],
@@ -785,12 +722,12 @@ const handleRequest = async (req, res) => {
   //
   // No Origin header arrives on an iframe navigation, so this rides the same
   // path as an <img> load through the check at the top of this handler.
-  if (req.method === 'GET' && req.url?.startsWith('/page?')) {
+  if (req.method === 'GET' && pathname === '/page') {
     const asked = new URL(req.url, 'http://x')
     const target = asked.searchParams.get('url') ?? ''
     const mode = asked.searchParams.get('mode') === 'live' ? 'live' : 'reader'
     try {
-      const page = await renderPage(target, mode, `http://localhost:${PORT}`)
+      const page = await renderPage(target, mode, `http://127.0.0.1:${PORT}`)
       res.writeHead(200, { ...cors, ...page.headers })
       return res.end(page.body)
     } catch (err) {
@@ -815,7 +752,7 @@ const handleRequest = async (req, res) => {
     }
   }
 
-  if (req.method === 'POST' && req.url === '/tts') {
+  if (req.method === 'POST' && pathname === '/tts') {
     const key = elevenKey()
     if (!key) {
       res.writeHead(503, cors)
@@ -900,7 +837,7 @@ const handleRequest = async (req, res) => {
   // use, and a server-side transcriber cannot. Detecting that the user is
   // speaking at all is done locally with voice-activity detection, which never
   // touches this endpoint; this is only for the words.
-  if (req.method === 'POST' && req.url === '/stt') {
+  if (req.method === 'POST' && pathname === '/stt') {
     const key = elevenKey()
     if (!key) {
       res.writeHead(503, cors)
@@ -1004,19 +941,45 @@ const wss = new WebSocketServer({
       )
       return done(false, 403, 'Forbidden')
     }
+    if (!tokenOk(socketToken(req))) {
+      console.warn('[jarvis] rejected websocket without the session token')
+      return done(false, 401, 'Unauthorized')
+    }
     done(true)
   },
+  // A browser that offers subprotocols must get one back or it drops the
+  // socket. The token rides in as one of them; the reply names only the
+  // protocol, so the secret is never echoed.
+  handleProtocols: (protocols) => (protocols.has('vas.v1') ? 'vas.v1' : false),
 })
-server.listen(PORT)
 
-console.log(`[jarvis] bridge listening on ws://localhost:${PORT}`)
+/**
+ * Loopback only. Listening on every interface put the agent socket — and
+ * /file, /stt and /tts — on the local network, behind nothing but an Origin
+ * header any program can forge.
+ */
+server.listen(PORT, '127.0.0.1', () => {
+  PORT = server.address().port
+  console.log(`[jarvis] bridge listening on ws://127.0.0.1:${PORT}`)
+  console.log(
+    TOKEN
+      ? '[jarvis] session token required on every request'
+      : '[jarvis] no session token set — loopback only, local dev mode',
+  )
+  // The desktop app starts the bridge as a utility/child process and waits
+  // for this before it opens the window.
+  const listening = { type: 'listening', port: PORT }
+  process.parentPort?.postMessage(listening)
+  process.send?.(listening)
+})
+
 console.log(
   `[jarvis] speech ${elevenKey() ? 'via ElevenLabs (key from MCP config)' : 'using browser fallback voice'}`,
 )
 console.log(`[jarvis] model ${MODEL} · effort ${EFFORT}`)
 console.log(
   `[jarvis] writes ${ALLOW_WRITES ? 'ENABLED' : 'disabled'}` +
-    (ALLOW_WRITES ? '' : ' — set JARVIS_ALLOW_WRITES=1 to permit shell/file/device actions'),
+    (ALLOW_WRITES ? '' : ' — start with --writes to permit shell/file/device actions'),
 )
 // Asynchronous, so it lands a beat after the rest of the banner. Worth printing
 // at all because an extension that is simply not running is indistinguishable
@@ -1025,7 +988,7 @@ console.log(
 void chromeAvailable().then((ok) => {
   console.log(
     ok
-      ? `[jarvis] browser control ready${ALLOW_WRITES ? '' : ' (reading only — clicking and typing need JARVIS_ALLOW_WRITES=1)'}`
+      ? `[jarvis] browser control ready${ALLOW_WRITES ? '' : ' (reading only — clicking and typing need --writes)'}`
       : '[jarvis] browser control unavailable — open Chrome with the Claude extension enabled',
   )
 })
@@ -1229,9 +1192,28 @@ wss.on('connection', (socket) => {
       // of input tokens on every turn. Replacing it makes the persona stick,
       // keeps answers short enough to speak, and cuts cost per turn.
       systemPrompt: SYSTEM_PROMPT,
-      // Run from the home directory so project-scoped MCP servers don't shadow
-      // the global ones, and so file tools have a sane root.
-      cwd: homedir(),
+      cwd: WORKSPACE,
+      // Built-in tools: search and planning only, unless --writes. Removing a
+      // tool from the model's context is stronger than refusing it in
+      // canUseTool, which the CLI does not consult for every call.
+      ...sessionTools({ allowWrites: ALLOW_WRITES }),
+      // Nothing written to ~/.claude/projects. A voice session routinely reads
+      // pages from signed-in sites — mail, banking, work dashboards — and the
+      // transcript of that has no reason to outlive the conversation.
+      persistSession: false,
+      // The SDK replaces the child's environment when this is set, so the
+      // parent's is carried over — minus the session token, which the agent
+      // never needs and must not be able to read back out.
+      env: {
+        ...Object.fromEntries(
+          Object.entries(process.env).filter(([k]) => k !== 'JARVIS_BRIDGE_TOKEN'),
+        ),
+        CLAUDE_AGENT_SDK_CLIENT_APP: 'vas/0.1',
+      },
+      // The packaged app points this at the claude.exe it unpacked from asar.
+      ...(process.env.JARVIS_CLAUDE_EXE
+        ? { pathToClaudeCodeExecutable: process.env.JARVIS_CLAUDE_EXE }
+        : {}),
       // No filesystem settings at all. Left to its default the SDK loads
       // ~/.claude/settings.json and settings.local.json exactly as the CLI
       // does — which on a working machine means a bypassPermissions default
