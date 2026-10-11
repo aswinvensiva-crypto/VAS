@@ -2,41 +2,157 @@
 
 **VAS** is a Windows desktop app for **JARVIS**, a voice assistant whose brain is
 Claude Code. It grew out of [jarvis-main](#jarvis-main-the-original-project)
-(documented below) and is being turned into a laptop app. The plan:
+(documented further down) and now runs as a real laptop app:
 
-- runs in its own window and the system tray instead of a localhost web page;
-- wakes on **"Hey Jarvis"** (on-device, free, offline) or **Ctrl+Alt+Space**;
-- opens Windows apps by voice, asking once per app before it does;
+- its own window and a tray icon, not a localhost web page in a browser;
+- wakes on **"Hey Jarvis"** (on-device, free, offline) or a hotkey, even while
+  hidden in the tray;
+- opens, switches to and closes Windows apps by voice, asking you first;
 - reads your real, signed-in Chrome, and asks you to say "confirm" before it
   clicks or types anything;
+- answers everyday orders on the PC in milliseconds (Kalliope-style "neurons"),
+  and hands everything else to Claude;
 - learns from corrections ("no, I said Spotify") and from routines you teach it
   ("when I say work mode, open VS Code and Chrome");
-- only acts on your voice once you enroll it.
+- can be told to act only on your voice once it has learned it.
 
-The full design and step-by-step plan is in [docs/vas/PLAN.md](docs/vas/PLAN.md).
+The design and the step-by-step plan are in [docs/vas/PLAN.md](docs/vas/PLAN.md).
+
+## Install
+
+```bash
+npm install
+npm run dist
+```
+
+That builds `release\VAS Setup 0.1.0.exe`. Run it: it installs for your user
+only (no admin), adds Start-menu and desktop shortcuts, and starts VAS. The
+installer is not code-signed, so Windows SmartScreen may say it "protected your
+PC": choose **More info → Run anyway**.
+
+What it needs:
+
+- **Windows 10 or 11, 64-bit.**
+- **Claude Code, logged in.** VAS ships its own copy of the Claude Code engine
+  but uses your existing login: run `claude` once and sign in. No API key.
+- **Chrome with the Claude extension**, for anything to do with web pages.
+- **Optional: an ElevenLabs key** (`ELEVENLABS_API_KEY`) for Scribe
+  transcription and the ElevenLabs voice. Without it everything runs locally.
+
+**First launch:** JARVIS can't hear until his voice models are installed. The
+window shows a **Download voice models** button (about 260 MB: the wake word,
+Whisper *base* and the voice check). Nothing downloads until you click it.
+Whisper *small* (610 MB, more accurate, slower) is optional:
+`npm run models -- whisper-small`, then set `"stt": { "model": "whisper-small" }`
+in `config.json`.
+
+## Using it
+
+| Say or press | What happens |
+|---|---|
+| **"Hey Jarvis"** | He wakes and listens |
+| **Ctrl+Alt+Space** | Push to talk, from anywhere. If another app owns that keyboard shortcut, VAS uses **Ctrl+Alt+J** instead |
+| "what time is it" / "what's the date today" | Answered on the PC, instantly |
+| "open Spotify" / "switch to VS Code" / "close Spotify" | Opening asks once per app and remembers; closing asks every time |
+| "what apps do I have" | Lists what the Start menu knows |
+| "search for Kochi weather" / "go to youtube" | A new tab in your Chrome, then a spoken summary |
+| "what's on this tab" | Reads the tab you're looking at (needs a Chrome window open) |
+| "no, I said Spotify" | Learns the mishearing, asks before saving, then does it |
+| "when I say work mode, open VS Code and Chrome" | Teaches a routine; "work mode" then runs without Claude |
+| "list my routines" / "forget the routine work mode" | Manage routines |
+| "learn my voice" | Opens voice enrollment (also in the tray menu) |
+| "go to sleep" / "mute yourself" / "shut down VAS" | Stand down, stop listening for the name, or quit (asks first) |
+| "lock down" / "unlock" | Refuse every action until unlocked; unlocking asks, in your voice |
+| Anything else | Goes to Claude, friendly and casual |
+
+**Tray menu:** show or hide the window, listening on/off, Start with Windows,
+Learn my voice…, open the data folder, restart JARVIS, quit.
+
+**Your voice only.** After "learn my voice" (eight short lines read aloud), the
+`owner.require` setting decides what other voices can do: `all` (default:
+nothing, not even a wake), `actions` (they can talk, not act) or `off`.
+
+## Permissions
+
+Every action passes a gate with four tiers, kept in `permissions.json`:
+
+| Tier | Used for |
+|---|---|
+| free | Reading Chrome, searching, opening a site in a new tab, time, lists |
+| remember | Opening or switching to an app: asked once per app |
+| confirm | Closing apps, clicking or typing in Chrome, saving corrections and routines, quitting, unlocking, risky apps (Terminal, PowerShell, cmd, regedit…) |
+| deny | Anything set to deny |
+
+A question is answered by saying "yes"/"confirm" or "no"/"cancel", or with the
+buttons on screen. Claude never gets a shell or file tools: it can only use
+VAS's own tools, which ask for themselves.
+
+## Where things live
+
+| Path | Holds |
+|---|---|
+| `%APPDATA%\VAS\data\` | `config.json`, `permissions.json`, `apps.json`, `corrections.json`, `brain.yml` (your routines), `speaker.json` (your voiceprint), `audit.log`, `bridge.log` |
+| `%LOCALAPPDATA%\VAS\models\` | The voice models |
+
+`config.json` settings: `userName`, `hotkey`, `stt.model`, `stt.language`
+(`en`, or `auto` for mixed-language speech), `owner.require`, and the wake
+keywords.
+
+## How VAS is put together
+
+```
+  ┌─ VAS window (Electron) ─────────┐  loopback + per-launch token  ┌─ bridge (utility process) ───────────┐
+  │  the face: React + Three.js     │ ◄───────────────────────────► │  neurons: local orders, routines     │
+  │  microphone → 16 kHz segments   │   ws://127.0.0.1:<random>     │  sherpa-onnx: "Hey Jarvis", Whisper, │
+  │  speaks with the Windows voice  │                               │    voice check (worker threads)      │
+  │  tray, hotkey                   │                               │  permission gate, corrections        │
+  └─────────────────────────────────┘                               │  Claude Agent SDK → claude.exe       │
+                                                                    │  Chrome via the extension's pipe     │
+                                                                    └──────────────────────────────────────┘
+```
+
+Nothing listens on the network: the bridge binds `127.0.0.1` on a random port
+and refuses any request without the token, and an installed VAS accepts only
+its own window. Speech before "Hey Jarvis" never leaves the PC and is never
+transcribed. Claude sessions are not saved to `~/.claude/projects`.
+
+## Developing
+
+```bash
+npm install
+npm run dev        # Vite + the Electron window, with live reload
+npm run app        # build the face, run Electron against dist/
+npm test           # bridge tests + renderer tests
+npm run dist       # the installer, in release/
+npm run models     # all voice models from the command line (about 0.9 GB)
+npm run probe:chrome   # read-only check of the Chrome extension link
+npm run probe:voice    # wake-word and Whisper timings on this PC
+```
 
 ### Status
 
 | Area | State |
 |---|---|
-| Repository, baseline, probes | Done. The Claude-in-Chrome named pipe works on Windows |
-| App naming (VAS outside, JARVIS inside) | Done |
-| Windows fixes, bridge hardening, Electron shell | Next |
-| Chrome, local voice, permissions, neurons | Planned |
+| Desktop app, tray, hotkey, installer | Done |
+| Bridge hardening (loopback, token, locked-down Claude session) | Done |
+| Local voice: wake word, Whisper, Scribe when keyed | Done |
+| Chrome over the Claude extension's named pipe | Done |
+| Permission gate with spoken confirmation | Done |
+| Neurons: apps, Chrome, corrections, taught routines | Done |
+| Voice enrollment ("only my voice") | Done; check it with the live test on the enrollment screen |
+| Friendly, casual persona | Done |
 
-### Developing
-
-```bash
-npm install
-npm test           # unit tests
-npm run build      # type-check and build the face
-npm run probe:chrome   # read-only check of the Chrome extension link
-npm run models     # download the local voice models (about 0.9 GB)
-```
+Known limits: "what's on this tab" needs a visible Chrome window; the voice
+check is tuned on synthetic voices until you enroll your own; the installer is
+unsigned.
 
 ---
 
 ## jarvis-main: the original project
+
+> Everything from here down describes the original browser version and is kept
+> for reference. Where it differs from VAS (port 8787, browser speech, local dev
+> origins, `npm start` in Chrome), the sections above are what VAS does.
 
 A browser voice assistant with an Iron Man holographic interface. Say
 **"Hey Jarvis"**, he wakes, listens, and does real things through your tools —
