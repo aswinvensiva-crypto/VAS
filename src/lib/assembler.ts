@@ -75,9 +75,24 @@ export function holdFor(text: string): number {
   return SETTLE_MS
 }
 
+/**
+ * Where a transcript came from, as the bridge reported it: the words exactly
+ * as transcribed, before any learned correction, and the bridge's id for the
+ * segment. Both are absent on the browser's own recogniser.
+ */
+export type SegmentSource = { raw?: string; utt?: string }
+
+/**
+ * What an assembled utterance carries besides its words: the raw words of
+ * every segment in it, joined the same way, and their ids. The bridge judges a
+ * spoken "yes" and learns corrections from `raw`, and looks `utts` up to know
+ * whose voice it was.
+ */
+export type Heard = { raw: string; utts: string[] }
+
 export type Assembler = {
   /** Add a transcript. `active` is true if the user is audibly still going. */
-  feed: (text: string, active: boolean) => void
+  feed: (text: string, active: boolean, from?: SegmentSource) => void
   /** Send whatever is held right now, if anything. */
   flush: () => void
   /** Throw away whatever is held — used when he stands down. */
@@ -88,8 +103,10 @@ export type Assembler = {
 /** The voice loop's diagnostics, which the assembler keeps current. */
 type AssemblerDiag = { holding: string; waitedMs: number }
 
+const join = (a: string, b: string) => `${a} ${b}`.replace(/\s+/g, ' ').trim()
+
 export function makeAssembler(h: {
-  emit: (text: string) => void
+  emit: (text: string, heard: Heard) => void
   partial: (text: string) => void
   /** Where to publish what is held and how long it waited; optional so a test
    *  can run the assembler on its own. */
@@ -97,6 +114,8 @@ export function makeAssembler(h: {
 }): Assembler {
   const diag: AssemblerDiag = h.diag ?? { holding: '', waitedMs: 0 }
   let held = ''
+  let heldRaw = ''
+  let utts: string[] = []
   let timer: ReturnType<typeof setTimeout> | null = null
   let firstAt = 0
 
@@ -105,18 +124,29 @@ export function makeAssembler(h: {
     timer = null
   }
 
+  const reset = () => {
+    held = ''
+    heldRaw = ''
+    utts = []
+    firstAt = 0
+  }
+
   const fire = () => {
     clear()
     const text = held.trim()
-    held = ''
-    firstAt = 0
-    if (text) h.emit(text)
+    const heard = { raw: heldRaw, utts }
+    reset()
+    if (text) h.emit(text, heard)
   }
 
   return {
-    feed(text, active) {
+    feed(text, active, from = {}) {
       if (!text.trim()) return
-      held = `${held} ${text}`.replace(/\s+/g, ' ').trim()
+      held = join(held, text)
+      // A segment with no raw words of its own was not corrected: the words
+      // are the raw words.
+      heldRaw = join(heldRaw, from.raw ?? text)
+      if (from.utt) utts = [...utts, from.utt]
       if (!firstAt) firstAt = Date.now()
       // The caption shows the whole thought as it assembles, not just the
       // fragment that happened to arrive last.
@@ -145,10 +175,43 @@ export function makeAssembler(h: {
     flush: fire,
     cancel() {
       clear()
-      held = ''
-      firstAt = 0
+      reset()
       diag.holding = ''
     },
     held: () => held,
   }
+}
+
+// ---------------------------------------------------------------------------
+// Answering a question
+// ---------------------------------------------------------------------------
+
+/**
+ * How long after he stops speaking before anything said can answer "shall I?".
+ *
+ * The speakers falling silent is not the microphone falling silent: the last
+ * syllable is still arriving for a moment, through the air and the capture
+ * pipeline. A segment that began inside that margin started over him, and the
+ * one thing it must never be is his own question approving itself.
+ */
+export const ANSWER_GAP_MS = 250
+
+/**
+ * Can speech that began at `startedAt` be the answer to the open question?
+ *
+ * Only if it began after the question finished playing (`questionEnd`,
+ * Infinity while it still is) and after anything else he was saying at the
+ * time (`spokeUntil` — a turn still finishing its own sentence over the
+ * question can say "sure" just as well), plus the margin above. All on the
+ * Date.now() clock.
+ *
+ * An answer that clears this is let through without the echo check: it
+ * naturally repeats the question ("yes, close Spotify"), and the bag-of-words
+ * test would throw exactly that answer away as JARVIS hearing himself.
+ */
+export function answersQuestion(
+  startedAt: number,
+  { questionEnd, spokeUntil }: { questionEnd: number; spokeUntil: number },
+): boolean {
+  return startedAt >= Math.max(questionEnd, spokeUntil) + ANSWER_GAP_MS
 }

@@ -7,7 +7,7 @@ import { Diagnostics } from './ui/Diagnostics'
 import { Enroll } from './ui/Enroll'
 import { ModelsBanner } from './ui/ModelsBanner'
 import { useStore } from './store'
-import { startVoice, type Voice, type VoiceMode } from './lib/voice'
+import { startVoice, type Heard, type Voice, type VoiceMode } from './lib/voice'
 import { createSpeaker, cycleVoice, currentVoiceName, speakingNow } from './lib/tts'
 import * as sfx from './lib/sfx'
 import * as music from './lib/music'
@@ -40,7 +40,7 @@ import { env } from './config'
 // as "travis" gets that word sent on to the model as a question.
 import { BARE_NAME, LEADING_NAME } from './lib/wakeWords'
 import { desktop } from './lib/desktop'
-import type { ConfirmAnswer, ConfirmRequest } from './lib/bridge'
+import type { ConfirmAnswer, ConfirmRequest, HeardMeta } from './lib/bridge'
 
 /**
  * The conversation.
@@ -93,6 +93,9 @@ export default function App() {
   const pendingConfirm = useRef<{ id: string; finish: (a: ConfirmAnswer) => void } | null>(null)
   /** Speaks the question, separately from the turn's own voice. */
   const confirmVoice = useRef<ReturnType<typeof createSpeaker> | null>(null)
+  /** When the open question finished playing (Infinity while it still is).
+   *  The voice loop accepts only speech that began after it as the answer. */
+  const questionEnd = useRef(0)
   const voicePoll = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // -- helpers --------------------------------------------------------------
@@ -133,7 +136,9 @@ export default function App() {
 
   // -- one turn -------------------------------------------------------------
 
-  const respond = async (said: string): Promise<void> => {
+  /** `heard` is what the voice loop knew about the words (raw transcript and
+   *  segment ids), handed to the bridge with them; absent for typed text. */
+  const respond = async (said: string, heard?: HeardMeta): Promise<void> => {
     const mine = ++turn.current
     const stale = () => mine !== turn.current
 
@@ -159,7 +164,7 @@ export default function App() {
     let after: string | undefined
 
     try {
-      const { text, after: next } = await ask(said, history.current, {
+      const { text, after: next, ignored } = await ask(said, history.current, {
         onText: (delta) => {
           if (stale()) return
           if (!started) {
@@ -192,7 +197,7 @@ export default function App() {
             spk.say(forTool(name))
           }
         },
-      })
+      }, heard)
       after = next
 
       if (stale()) return
@@ -209,7 +214,9 @@ export default function App() {
 
       await spk.end()
       if (stale()) return
-      sfx.play('done')
+      // The bridge heard someone else's voice and answered nothing. No chime
+      // for a turn that never happened; just back to listening.
+      if (!ignored) sfx.play('done')
     } catch (err) {
       if (stale()) return
       console.error(err)
@@ -257,7 +264,9 @@ export default function App() {
     }
   }
 
-  const onWake = (trailing: string) => {
+  /** `heard` is what the bridge knew about the wake segment — its raw words,
+   *  id, and voice — which the command riding on it carries to the bridge. */
+  const onWake = (trailing: string, heard?: Heard) => {
     const phase = store.getState().phase
     if (phase === 'offline' || phase === 'boot') return
 
@@ -267,7 +276,7 @@ export default function App() {
     // "Jarvis, what's happening in AI this week" in one breath. Waiting for a
     // greeting he didn't need is the most common way an assistant wastes time.
     if (trailing) {
-      void respond(trailing)
+      void respond(trailing, heard)
       return
     }
 
@@ -293,11 +302,12 @@ export default function App() {
     const phase = store.getState().phase
     if (phase === 'offline' || phase === 'boot' || phase === 'dormant') return
     // Answering "shall I?" must not cut off the turn that is waiting for the
-    // answer — only the question's own voice stops.
-    if (phase === 'confirming') {
-      confirmVoice.current?.cancel()
-      return
-    }
+    // answer — nor the question itself any more. Speech that begins while the
+    // question is still playing can never be taken as its answer (that is the
+    // one way the question could approve itself; see answersQuestion), so
+    // cutting the question short for it would leave the user unheard and
+    // unasked. The question finishes, and the answer that follows it counts.
+    if (phase === 'confirming') return
 
     const wasBusy =
       phase === 'thinking' || phase === 'tooling' || phase === 'speaking'
@@ -316,12 +326,13 @@ export default function App() {
     store.getState().setPhase('listening')
   }
 
-  const onUtterance = (text: string) => {
+  const onUtterance = (text: string, heard?: Heard) => {
     const phase = store.getState().phase
     if (phase === 'offline' || phase === 'boot' || phase === 'dormant') return
     if (pendingConfirm.current) {
-      // The raw words go back; the bridge decides what they mean.
-      pendingConfirm.current.finish({ source: 'voice', text })
+      // The words go back as heard — raw, before any learned correction, with
+      // the segment ids — and the bridge decides what they mean.
+      pendingConfirm.current.finish({ source: 'voice', text, raw: heard?.raw, utts: heard?.utts })
       return
     }
 
@@ -337,7 +348,10 @@ export default function App() {
       return
     }
 
-    void respond(said)
+    // The raw words lose the name the same way, or a correction learned from
+    // them would see "jarvis" as one more word that was misheard.
+    const raw = (heard?.raw ?? text).replace(LEADING_NAME, '').trim()
+    void respond(said, { raw, utts: heard?.utts })
   }
 
   const onPartial = (text: string) => {
@@ -381,8 +395,17 @@ export default function App() {
       sfx.play('listen')
       const q = createSpeaker()
       confirmVoice.current = q
+      // Until it has finished playing, nothing heard can be its answer. A voice
+      // that fails counts as finished: a question stuck "still playing" would
+      // leave the user unable to answer it except by clicking.
+      questionEnd.current = Infinity
       q.say(req.prompt)
-      void q.end()
+      void q
+        .end()
+        .catch(() => {})
+        .then(() => {
+          if (confirmVoice.current === q) questionEnd.current = Date.now()
+        })
     })
 
   const cancelConfirm = (id: string) => {
@@ -634,6 +657,7 @@ export default function App() {
       onUtterance,
       onError: onVoiceError,
       urgent: () => pendingConfirm.current !== null,
+      questionEnd: () => questionEnd.current,
     })
 
     store.getState().setPhase('dormant')

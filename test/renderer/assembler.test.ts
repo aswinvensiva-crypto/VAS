@@ -2,11 +2,14 @@ import { test } from 'node:test'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  ANSWER_GAP_MS,
   CONTINUE_MS,
   MAX_HOLD_MS,
   SETTLE_MS,
+  answersQuestion,
   holdFor,
   makeAssembler,
+  type Heard,
 } from '../../src/lib/assembler.ts'
 
 /**
@@ -18,14 +21,18 @@ function rig(t: TestContext) {
   // Not zero: the assembler uses 0 to mean "nothing held yet".
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_000_000 })
   const emitted: string[] = []
+  const heard: Heard[] = []
   const partials: string[] = []
   const diag = { holding: '', waitedMs: -1 }
   const a = makeAssembler({
-    emit: (text) => emitted.push(text),
+    emit: (text, h) => {
+      emitted.push(text)
+      heard.push(h)
+    },
     partial: (text) => partials.push(text),
     diag,
   })
-  return { a, emitted, partials, diag, tick: (ms: number) => t.mock.timers.tick(ms) }
+  return { a, emitted, heard, partials, diag, tick: (ms: number) => t.mock.timers.tick(ms) }
 }
 
 test('holdFor: a terminator sends now, an unfinished clause waits longest', () => {
@@ -124,10 +131,58 @@ test('flush sends what is held right now; cancel throws it away', (t) => {
   assert.deepEqual(emitted, ['open chrome and'], 'a cancelled hold never fires')
 })
 
+test('the utterance carries every segment\'s raw words and id, in order', (t) => {
+  const { a, emitted, heard } = rig(t)
+  a.feed('open spotify and', false, { raw: 'open spot if i and', utt: 'u1' })
+  a.feed('close notepad.', false, { raw: 'close note pad.', utt: 'u2' })
+  assert.deepEqual(emitted, ['open spotify and close notepad.'])
+  assert.deepEqual(heard, [{ raw: 'open spot if i and close note pad.', utts: ['u1', 'u2'] }])
+})
+
+test('without the bridge\'s word on it, the words are the raw words and there are no ids', (t) => {
+  const { a, heard } = rig(t)
+  a.feed('what time is it?', false)
+  assert.deepEqual(heard, [{ raw: 'what time is it?', utts: [] }])
+})
+
+test('a cancelled or sent utterance takes its ids with it', (t) => {
+  const { a, heard } = rig(t)
+  a.feed('open chrome and', false, { raw: 'open chrome and', utt: 'stale' })
+  a.cancel()
+  a.feed('what time is it?', false, { raw: 'what tim is it?', utt: 'u2' })
+  a.feed('Thanks.', false, { utt: 'u3' })
+  assert.deepEqual(heard, [
+    { raw: 'what tim is it?', utts: ['u2'] },
+    { raw: 'Thanks.', utts: ['u3'] },
+  ])
+})
+
 test('blank transcripts are ignored', (t) => {
   const { a, emitted, partials } = rig(t)
   a.feed('   ', false)
   assert.deepEqual(emitted, [])
   assert.deepEqual(partials, [])
   assert.equal(a.held(), '')
+})
+
+// A "shall I?" is answered only by speech that began once it had finished.
+
+test('nothing said while the question is still playing can answer it', () => {
+  const playing = { questionEnd: Infinity, spokeUntil: 0 }
+  assert.equal(answersQuestion(1_000_000, playing), false)
+  assert.equal(answersQuestion(Number.MAX_SAFE_INTEGER, playing), false)
+})
+
+test('speech that began inside the margin after the question is its echo, not its answer', () => {
+  const ended = { questionEnd: 10_000, spokeUntil: 9_990 }
+  assert.equal(answersQuestion(9_000, ended), false, 'began over the question')
+  assert.equal(answersQuestion(10_000 + ANSWER_GAP_MS - 1, ended), false, 'its last syllable, still arriving')
+  assert.equal(answersQuestion(10_000 + ANSWER_GAP_MS, ended), true, 'began after it')
+})
+
+test('if he was still talking after the question, the margin runs from when he stopped', () => {
+  // The turn's own sentence ran on past the question's last word.
+  const overran = { questionEnd: 10_000, spokeUntil: 11_000 }
+  assert.equal(answersQuestion(10_000 + ANSWER_GAP_MS, overran), false)
+  assert.equal(answersQuestion(11_000 + ANSWER_GAP_MS, overran), true)
 })

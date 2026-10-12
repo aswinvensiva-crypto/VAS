@@ -37,8 +37,10 @@ import { encodeWav } from './wav'
 export type VadHandlers = {
   /** The signal crossed into speech. Instant; this is the barge-in trigger. */
   onStart: () => void
-  /** Speech ended. The blob is one complete, decodable audio file. */
-  onEnd: (audio: Blob, ms: number) => void
+  /** Speech ended. The blob is one complete, decodable audio file; `startedAt`
+   *  is when the speech in it began, on the Date.now() clock, so the voice
+   *  loop can tell speech that started over JARVIS from speech that followed. */
+  onEnd: (audio: Blob, ms: number, startedAt: number) => void
   /** 0..1 smoothed input level, for the caption/orb while capturing. */
   onLevel: (v: number) => void
   /** Capture is impossible — no microphone, or no audio worklet support. */
@@ -178,6 +180,10 @@ export async function startVad(h: VadHandlers): Promise<Vad> {
   let armedAt = 0 // energy first rose; the segment may be pre-rolling
   let speaking = false
   let speechStartedAt = 0
+  // The onset again, on the wall clock that the rest of the app (when he last
+  // spoke, when a question finished) is measured on. Read as the onset frame is
+  // handled, the same moment those are, so they share any delivery lag.
+  let onsetWall = 0
   let lastLoud = 0
   let preRoll: Float32Array[] = []
   let segment: Float32Array[] = []
@@ -185,11 +191,12 @@ export async function startVad(h: VadHandlers): Promise<Vad> {
   const endSegment = () => {
     const frames = segment
     const startedAt = speechStartedAt
+    const startedWall = onsetWall
     segment = []
     speaking = false
     speechStartedAt = 0
     if (!frames.length) return
-    h.onEnd(encodeWav(concat(frames), RATE), startedAt ? t - startedAt : 0)
+    h.onEnd(encodeWav(concat(frames), RATE), startedAt ? t - startedAt : 0, startedWall)
   }
 
   const onFrame = (frame: Float32Array) => {
@@ -216,6 +223,7 @@ export async function startVad(h: VadHandlers): Promise<Vad> {
           // Onset: start the segment now, with the pre-roll, before we have
           // even confirmed this is speech. A blip is simply thrown away.
           armedAt = t
+          onsetWall = Date.now()
           segment = [...preRoll, frame]
           preRoll = []
         } else {
