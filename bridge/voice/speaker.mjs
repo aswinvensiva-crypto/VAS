@@ -36,7 +36,7 @@ const FILE = 'speaker.json'
 /** Below this a clip says too little about a voice to judge at all. */
 export const MIN_SECONDS = 0.8
 /** Clips shorter than this use the short-clip threshold. */
-const SHORT_SECONDS = 2
+export const SHORT_SECONDS = 2
 /** How far below the threshold a score must fall to be called someone else. */
 const OTHER_MARGIN = 0.12
 

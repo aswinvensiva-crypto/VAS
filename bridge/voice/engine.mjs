@@ -1,6 +1,6 @@
 import { Worker } from 'node:worker_threads'
 import { cpus } from 'node:os'
-import { existsSync } from 'node:fs'
+import { existsSync, rmSync } from 'node:fs'
 import { MODELS, modelPath } from './models.mjs'
 import { writeKeywordsFile } from './keywords.mjs'
 import { dataDir } from '../store/files.mjs'
@@ -20,6 +20,7 @@ export function createVoiceEngine({ config }) {
   const pending = new Map()
   let seq = 0
   let keywords = null
+  let trials = 0
 
   function worker(name) {
     if (workers[name]) return workers[name]
@@ -31,6 +32,9 @@ export function createVoiceEngine({ config }) {
       ok ? p.resolve(result) : p.reject(new Error(error))
     })
     const fail = (err) => {
+      // A worker let go on purpose (endTrials) may exit after its successor
+      // has started; that one's calls are none of this exit's business.
+      if (workers[name] !== w) return
       delete workers[name]
       for (const [id, p] of pending) {
         if (p.worker !== name) continue
@@ -45,13 +49,15 @@ export function createVoiceEngine({ config }) {
     return w
   }
 
+  /** `samples` is one clip, or a list of them for an op that takes several. */
   function call(name, op, samples, opts) {
     const id = ++seq
     // A copy is transferred, so the caller keeps its samples for the next step.
-    const copy = samples.slice()
+    const copy = Array.isArray(samples) ? samples.map((s) => s.slice()) : samples.slice()
+    const buffers = Array.isArray(copy) ? copy.map((s) => s.buffer) : [copy.buffer]
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject, worker: name })
-      worker(name).postMessage({ id, op, samples: copy, opts }, [copy.buffer])
+      worker(name).postMessage({ id, op, samples: copy, opts }, buffers)
     })
   }
 
@@ -87,6 +93,32 @@ export function createVoiceEngine({ config }) {
     spot(samples) {
       if (!keywords) return Promise.resolve(null)
       return call('fast', 'kws', samples, { modelDir: modelPath('kws'), keywordsFile: keywords })
+    },
+    /**
+     * Which of `clips` would wake JARVIS if the wake keywords were `trial`
+     * instead of the live ones — one setting of enrollment's sweep. Each try
+     * builds its own spotter on a thread of its own, so a sweep never holds
+     * up the live spotter or pushes it out of the cache; endTrials() lets the
+     * thread go when the sweep is over.
+     * @param {Float32Array[]} clips
+     * @param {object[]} trial  keywords, shaped like config.wake.keywords
+     * @returns {Promise<boolean[]>}
+     */
+    async spotTrial(clips, trial) {
+      if (!installed('kws') || !clips.length) return clips.map(() => false)
+      const file = writeKeywordsFile(trial, modelPath('kws'), dataDir(), `keywords.trial-${process.pid}-${++trials}.txt`)
+      try {
+        if (!file.count) return clips.map(() => false)
+        return await call('trial', 'kwsTrial', clips, { modelDir: modelPath('kws'), keywordsFile: file.path })
+      } finally {
+        rmSync(file.path, { force: true })
+      }
+    },
+    /** Let the sweep's thread go; call once its last spotTrial has settled. */
+    endTrials() {
+      const w = workers.trial
+      delete workers.trial
+      void w?.terminate()
     },
     /** @returns {Promise<string>} */
     transcribe(samples) {

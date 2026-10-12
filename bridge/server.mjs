@@ -137,6 +137,8 @@ function startModelDownload(names) {
 
 const ENROLL = createEnrollment({
   engine: VOICE,
+  // Finishing tunes the wake word to the voice: into CONFIG, live, and config.json.
+  config: CONFIG,
   onChange: () => {
     SPEAKER = loadSpeaker()
   },
