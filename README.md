@@ -58,19 +58,27 @@ in `config.json`.
 | "search for Kochi weather" / "go to youtube" | A new tab in your Chrome, then a spoken summary |
 | "what's on this tab" | Reads the tab you're looking at (needs a Chrome window open) |
 | "no, I said Spotify" | Learns the mishearing, asks before saving, then does it |
-| "when I say work mode, open VS Code and Chrome" | Teaches a routine; "work mode" then runs without Claude |
+| "when I say work mode, open VS Code and Chrome" | Teaches a routine; "work mode" then runs without Claude. A comma marks where the trigger ends, and a step can be a spoken line ("…, say good morning") |
 | "list my routines" / "forget the routine work mode" | Manage routines |
 | "learn my voice" | Opens voice enrollment (also in the tray menu) |
 | "go to sleep" / "mute yourself" / "shut down VAS" | Stand down, stop listening for the name, or quit (asks first) |
 | "lock down" / "unlock" | Refuse every action until unlocked; unlocking asks, in your voice |
+| **S** | Opens Settings (also in the tray menu) |
 | Anything else | Goes to Claude, friendly and casual |
 
 **Tray menu:** show or hide the window, listening on/off, Start with Windows,
-Learn my voice…, open the data folder, restart JARVIS, quit.
+Settings…, Learn my voice…, open the data folder, restart JARVIS, quit.
 
-**Your voice only.** After "learn my voice" (eight short lines read aloud), the
-`owner.require` setting decides what other voices can do: `all` (default:
-nothing, not even a wake), `actions` (they can talk, not act) or `off`.
+**Settings** has tabs for your name and speech options, learned corrections,
+apps you've allowed, taught routines, your voice, and permissions. Changes take
+effect immediately; so do hand edits to the files under `%APPDATA%\VAS\data`.
+
+**Your voice only.** "Learn my voice" asks you to read about a dozen lines:
+one- and two-word answers as well as full sentences, because the voice check is
+calibrated separately for short and long speech. It also tunes the wake word to
+how you say "Hey Jarvis". After that, the owner setting (Settings → General, or
+`owner.require`) decides what other voices can do: `all` (default: nothing,
+not even a wake), `actions` (they can talk, not act) or `off`.
 
 ## Permissions
 
@@ -87,6 +95,18 @@ A question is answered by saying "yes"/"confirm" or "no"/"cancel", or with the
 buttons on screen. Claude never gets a shell or file tools: it can only use
 VAS's own tools, which ask for themselves.
 
+A few rules sit on top of the tiers:
+
+- **After JARVIS reads a page, leaving that site asks once.** Following a link,
+  looking up a URL, or showing a remote page or picture from a different site
+  asks "You just read mail.google.com. Go to example.com now?" once per answer.
+  A page can't quietly send what JARVIS read somewhere else.
+- **A click or typing is tied to the page you approved.** If the tab navigates
+  while JARVIS is asking, nothing happens.
+- **The camera asks first while VAS is hidden.**
+- **Stopping JARVIS withdraws every pending question,** including any queued
+  behind the one on screen.
+
 ## Where things live
 
 | Path | Holds |
@@ -95,8 +115,10 @@ VAS's own tools, which ask for themselves.
 | `%LOCALAPPDATA%\VAS\models\` | The voice models |
 
 `config.json` settings: `userName`, `hotkey`, `stt.model`, `stt.language`
-(`en`, or `auto` for mixed-language speech), `owner.require`, and the wake
-keywords.
+(`en`, or `auto` for mixed-language speech), `owner.require`, `tts.voice` (the
+Windows voice you prefer), `sites` (your own names for websites, e.g.
+`{ "jira": "mycompany.atlassian.net" }` for "open jira"), and the wake keywords
+(phones, or plain words such as `"hey friday"`).
 
 ## How VAS is put together
 
@@ -124,10 +146,18 @@ npm run dev        # Vite + the Electron window, with live reload
 npm run app        # build the face, run Electron against dist/
 npm test           # bridge tests + renderer tests
 npm run dist       # the installer, in release/
+npm run e2e:app    # end-to-end check of release/win-unpacked/VAS.exe
 npm run models     # all voice models from the command line (about 0.9 GB)
 npm run probe:chrome   # read-only check of the Chrome extension link
 npm run probe:voice    # wake-word and Whisper timings on this PC
+npm start          # browser debug mode: the face in a browser tab (also: npm run web)
 ```
+
+The bridge refuses to start without the session token the app gives it.
+Browser debug mode has no app to hand one over, so it runs the bridge with
+`--insecure-dev`, which says so loudly. Never use it on a shared machine. The
+old "direct" mode (the browser calling the Claude API with a key) is compiled
+out of every build unless you build with `VAS_DIRECT=1`.
 
 ### Status
 
@@ -139,12 +169,17 @@ npm run probe:voice    # wake-word and Whisper timings on this PC
 | Chrome over the Claude extension's named pipe | Done |
 | Permission gate with spoken confirmation | Done |
 | Neurons: apps, Chrome, corrections, taught routines | Done |
-| Voice enrollment ("only my voice") | Done; check it with the live test on the enrollment screen |
+| Voice enrollment ("only my voice"), wake-word tuning | Done; check it with the live test on the enrollment screen |
 | Friendly, casual persona | Done |
+| Settings drawer, live config reload | Done |
+| Chrome safety: tab-bound confirmations, leave-site rule | Done |
 
 Known limits: "what's on this tab" needs a visible Chrome window; the voice
-check is tuned on synthetic voices until you enroll your own; the installer is
-unsigned.
+check and wake tuning are verified on synthetic voices until you enroll your
+own; the installer is unsigned. Checks that need you in person: wake and
+confirm with your real voice, another person or a phone recording being
+refused, mixed-language accuracy on your speech, a Chrome action in your
+signed-in browser, and Scribe with a real ElevenLabs key.
 
 ---
 
