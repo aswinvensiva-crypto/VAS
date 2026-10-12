@@ -24,13 +24,41 @@ export const DEFAULT_WAKE_KEYWORDS = [
   },
 ]
 
-const Keyword = z.object({
-  name: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
-  phones: z.array(z.string().min(1)).min(1),
-  boost: z.number().min(0).max(10).default(1.5),
-  threshold: z.number().min(0).max(1).default(0.25),
-  enabled: z.boolean().default(true),
-})
+const KeywordEntry = z
+  .object({
+    name: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+    /** ARPAbet phones, one string per way of saying it. */
+    phones: z.array(z.string().min(1)).default([]),
+    /** Or plain words ("hey friday"), turned into phones from the keyword
+     *  model's own dictionary when the keywords file is built. */
+    phrases: z.array(z.string().min(1).max(80)).default([]),
+    boost: z.number().min(0).max(10).default(1.5),
+    threshold: z.number().min(0).max(1).default(0.25),
+    enabled: z.boolean().default(true),
+  })
+  .refine((k) => k.phones.length + k.phrases.length > 0, 'a wake keyword needs phones or phrases')
+
+/** "hey friday" -> HEY_FRIDAY, the name the spotter reports it by. */
+function keywordName(phrase) {
+  const name = phrase.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+  return /^[A-Z]/.test(name) ? name : `WAKE_${name}`
+}
+
+/**
+ * One wake keyword: in full, or just the words — "hey friday" in the list is
+ * { name: 'HEY_FRIDAY', phrases: ['hey friday'] } with the default boost and
+ * threshold.
+ */
+const Keyword = z.union([
+  z
+    .string()
+    .trim()
+    .min(1)
+    .max(80)
+    .transform((phrase) => ({ name: keywordName(phrase), phrases: [phrase] }))
+    .pipe(KeywordEntry),
+  KeywordEntry,
+])
 
 export const ConfigSchema = z.object({
   /** What JARVIS calls you. Defaults to your Windows account name. */

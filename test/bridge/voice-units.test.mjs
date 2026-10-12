@@ -1,9 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { encodeWav, parseWav, rms, WavError } from '../../bridge/voice/wav.mjs'
-import { keywordLines } from '../../bridge/voice/keywords.mjs'
+import { keywordLines, phonesFor, writeKeywordsFile } from '../../bridge/voice/keywords.mjs'
 import { cleanTranscript, isPhantom, opensWithWake, speechRatio, stripName, stripWake } from '../../bridge/voice/transcript.mjs'
-import { DEFAULT_WAKE_KEYWORDS } from '../../bridge/store/config.mjs'
+import { ConfigSchema, DEFAULT_WAKE_KEYWORDS } from '../../bridge/store/config.mjs'
+import { modelPath, status } from '../../bridge/voice/models.mjs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join as joinPath } from 'node:path'
 
 test('WAV: 16-bit mono round trip', () => {
   const samples = new Float32Array([0, 0.5, -0.5, 1, -1, 0.25])
@@ -32,6 +36,74 @@ test('keywords: lines are written in the spotter format; unknown phones are skip
   assert.equal(bad.lines.length, 0)
   assert.match(bad.errors[0], /QQ9/)
   assert.equal(keywordLines([{ ...DEFAULT_WAKE_KEYWORDS[0], enabled: false }], tokens).lines.length, 0)
+})
+
+/** A few lines of en.phone, as readLexicon would hold them. */
+const LEXICON = new Map([
+  ['HEY', 'HH EY1'],
+  ['JARVIS', 'JH AA1 R V AH0 S'],
+  ['FRIDAY', 'F R AY1 D IY0'],
+  ["WHAT'S", 'W AH1 T S'],
+  ['UP', 'AH1 P'],
+])
+const TOKENS = new Set('HH EY1 JH AA1 R V AH0 IH0 S F AY1 D IY0 W AH1 T P'.split(' '))
+
+test('phonesFor: a phrase is its words looked up in the dictionary, or null', () => {
+  assert.equal(phonesFor('Hey Jarvis', null, LEXICON), 'HH EY1 JH AA1 R V AH0 S')
+  assert.equal(phonesFor('  hey,   FRIDAY! ', null, LEXICON), 'HH EY1 F R AY1 D IY0')
+  assert.equal(phonesFor('What’s up', null, LEXICON), 'W AH1 T S AH1 P') // a typographic apostrophe too
+  assert.equal(phonesFor('hey jarvo', null, LEXICON), null) // one unknown word spoils the phrase
+  assert.equal(phonesFor('...', null, LEXICON), null)
+})
+
+test('keywords: a keyword given as words is written as its phones; a phrase that cannot be said is reported', () => {
+  const { lines, errors } = keywordLines(
+    [
+      { name: 'HEY_FRIDAY', phrases: ['hey friday'], boost: 1.5, threshold: 0.3 },
+      // Phones and a phrase that says the same thing make one line, not two.
+      { name: 'HEY_JARVIS', phones: ['HH EY1 JH AA1 R V AH0 S'], phrases: ['Hey, Jarvis', 'hey jarvo'], boost: 1, threshold: 0.4 },
+    ],
+    TOKENS,
+    LEXICON,
+  )
+  assert.deepEqual(lines, ['HH EY1 F R AY1 D IY0 :1.5 #0.3 @HEY_FRIDAY', 'HH EY1 JH AA1 R V AH0 S :1 #0.4 @HEY_JARVIS'])
+  assert.equal(errors.length, 1)
+  assert.match(errors[0], /HEY_JARVIS: cannot say "hey jarvo" — no pronunciation for JARVO/)
+  // Without the dictionary a phrase cannot be looked up; phones still work.
+  const bare = keywordLines([{ name: 'HEY_FRIDAY', phrases: ['hey friday'], boost: 1.5, threshold: 0.3 }], TOKENS)
+  assert.deepEqual(bare.lines, [])
+  assert.match(bare.errors[0], /en\.phone/)
+})
+
+test('config: a wake keyword may be written as just the words', () => {
+  const wake = (keywords) => ConfigSchema.parse({ wake: { keywords } }).wake.keywords
+  assert.deepEqual(wake(['hey friday']), [
+    { name: 'HEY_FRIDAY', phones: [], phrases: ['hey friday'], boost: 1.5, threshold: 0.25, enabled: true },
+  ])
+  assert.equal(wake(['  2001, a space odyssey ']).at(0).name, 'WAKE_2001_A_SPACE_ODYSSEY')
+  const full = wake([{ name: 'COMPUTER', phrases: ['computer'], threshold: 0.4 }]).at(0)
+  assert.deepEqual([full.phones, full.phrases, full.threshold], [[], ['computer'], 0.4])
+  // The default keeps working unchanged, and a keyword with nothing to say is refused.
+  assert.equal(ConfigSchema.parse({}).wake.keywords[0].phones[0], 'HH EY1 JH AA1 R V AH0 S')
+  assert.equal(ConfigSchema.safeParse({ wake: { keywords: [{ name: 'X' }] } }).success, false)
+  assert.equal(ConfigSchema.safeParse({ wake: { keywords: [''] } }).success, false)
+})
+
+const kwsModel = (await status()).kws ? modelPath('kws') : null
+
+test('keywords: phrases are looked up in the real model dictionary', { skip: !kwsModel && 'needs the keyword model' }, () => {
+  assert.equal(phonesFor('hey jarvis', kwsModel), 'HH EY1 JH AA1 R V AH0 S')
+  const dir = mkdtempSync(joinPath(tmpdir(), 'vas-kw-'))
+  try {
+    const out = writeKeywordsFile(ConfigSchema.parse({ wake: { keywords: ['hey jarvis', 'computer'] } }).wake.keywords, kwsModel, dir)
+    assert.deepEqual(out.errors, [])
+    assert.deepEqual(readFileSync(out.path, 'utf8').trim().split('\n'), [
+      'HH EY1 JH AA1 R V AH0 S :1.5 #0.25 @HEY_JARVIS',
+      'K AH0 M P Y UW1 T ER0 :1.5 #0.25 @COMPUTER',
+    ])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('stripWake leaves just the command', () => {
