@@ -78,7 +78,7 @@ const START_MS = 110
  * enough not to clip someone thinking mid-sentence meant every completed
  * question also sat waiting for nothing. Deciding whether the thought is
  * actually finished now happens a layer up, on the words rather than the
- * energy (see makeAssembler in voice.ts), so this can go back to being what it
+ * energy (see makeAssembler in assembler.ts), so this can go back to being what it
  * should always have been — a cheap "have they stopped making noise" — and the
  * shorter window gets the transcript moving sooner.
  */
