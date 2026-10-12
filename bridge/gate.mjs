@@ -36,6 +36,7 @@ export const DEFAULT_TIERS = {
   'chrome.read': 'free',
   'chrome.navigate': 'free',
   'chrome.act': 'confirm',
+  'chrome.leave': 'confirm',
   'routine.save': 'confirm',
   'routine.forget': 'confirm',
   'correction.save': 'confirm',

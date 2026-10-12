@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { audit } from './store/audit.mjs'
 
 const execFileP = promisify(execFile)
 
@@ -100,6 +101,8 @@ const CONNECT_TIMEOUT_MS = 3_000
  * accepted as a last resort, because on some setups it is all there is.
  */
 async function findSocket() {
+  const pinned = pinnedPipe()
+  if (pinned !== undefined) return pinned
   if (process.platform === 'win32') return findPipe()
   let names
   try {
@@ -121,6 +124,21 @@ async function findSocket() {
   if (!candidates.length) return null
   candidates.sort((a, b) => a.fallback - b.fallback || b.at - a.at)
   return candidates[0].path
+}
+
+/**
+ * JARVIS_CHROME_PIPE names the address outright instead of searching for it: a
+ * pipe (or socket) path, or "none" to behave exactly as though Chrome were
+ * closed. It is the seam the tests stand on — a fake native host on a private
+ * pipe, or no browser at all — and it is read on every call, so one process can
+ * be pointed at either without restarting.
+ *
+ * @returns {string|null|undefined} undefined when unset: search as usual
+ */
+function pinnedPipe() {
+  const pinned = process.env.JARVIS_CHROME_PIPE?.trim()
+  if (!pinned) return undefined
+  return pinned.toLowerCase() === 'none' ? null : pinned
 }
 
 /**
@@ -592,27 +610,44 @@ acting on a page, and the reliable way to find out what is actually on it.
 Prefer this over a screenshot when you want to know what a page says or what can
 be clicked. Use chrome_page_text instead when you only want the prose.`
 
-/**
- * @param {{ allowWrites: boolean }} options
- */
-/** Where a tab is, as a host name — read from the browser, not from the model. */
-async function tabHost(tab) {
+/** Where a tab is, as the browser reports it — read from the browser, not from the model. */
+async function tabUrl(tab) {
   try {
-    const reply = await link.call('tabs_context_mcp', { createIfEmpty: false })
-    for (const block of reply?.result?.content ?? []) {
-      if (block?.type !== 'text') continue
-      try {
-        const parsed = JSON.parse(block.text)
-        const hit = (parsed?.availableTabs ?? []).find((t) => t.tabId === tab)
-        if (hit?.url) return new URL(hit.url).host.replace(/^www\./, '')
-      } catch {
-        /* the prose block */
-      }
-    }
+    const hit = readTabs(await link.call('tabs_context_mcp', { createIfEmpty: false })).find(
+      (t) => t.tabId === tab,
+    )
+    return typeof hit?.url === 'string' ? hit.url : null
   } catch {
-    /* the browser went away; the caller says "the page" */
+    return null // the browser went away; the caller says "the page"
   }
-  return null
+}
+
+/** A URL's host as it would be said aloud: "mail.google.com", never "www.". */
+function hostName(url) {
+  try {
+    return url ? new URL(url).host.replace(/^www\./, '') || null : null
+  } catch {
+    return null
+  }
+}
+
+/** Where a tab is, as a host name. */
+async function tabHost(tab) {
+  return hostName(await tabUrl(tab))
+}
+
+/**
+ * Which page an address is: scheme, host and path. Not the query or the
+ * fragment, which a page rewrites as it is used — Gmail's #inbox becoming
+ * #inbox/FMfcg… is the same page with a message open, not a different site.
+ */
+function pageKey(url) {
+  try {
+    const u = new URL(url)
+    return `${u.protocol}//${u.host}${u.pathname.replace(/\/$/, '')}`
+  } catch {
+    return null
+  }
 }
 
 /** The page's own label for an element ref, e.g. 'button "Send"'. */
@@ -623,7 +658,12 @@ async function refLabel(tab, ref) {
     const text = (reply?.result?.content ?? []).map((b) => (b?.type === 'text' ? b.text : '')).join('\n')
     const line = text.split('\n').find((l) => l.includes(`[${ref}]`))
     if (!line) return null
-    return line.replace(/\[ref_\d+\]/g, '').replace(/\s+/g, ' ').trim().slice(0, 60)
+    return line
+      .replace(/\[ref_\d+\]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^[-*] /, '') // a tree drawn as a bulleted list
+      .slice(0, 60)
   } catch {
     return null
   }
@@ -640,11 +680,21 @@ const preview = (v) => {
  * what would be typed. Never from the model's own account of what it is about
  * to do — a page it has just read could have talked it into describing a
  * "Send" button as something harmless.
+ *
+ * Also hands back which tab and which page the question is about, so the
+ * answer can be held to them (see `guarded`).
+ *
+ * @returns {Promise<{ prompt: string, tab: number|null, page: string|null }>}
  */
 async function describeAction(kind, args) {
   const tab = await resolveTab(args.tabId).catch(() => null)
-  const where = (tab !== null && (await tabHost(tab))) || 'the page'
+  const url = tab === null ? null : await tabUrl(tab)
+  const where = hostName(url) ?? 'the page'
   const what = kind === 'click' || kind === 'form' ? await refLabel(tab, args.ref) : null
+  return { prompt: actionPrompt(kind, args, where, what), tab, page: pageKey(url) }
+}
+
+function actionPrompt(kind, args, where, what) {
   switch (kind) {
     case 'click':
       return `Click ${what ?? 'there'} on ${where}?`
@@ -661,10 +711,157 @@ async function describeAction(kind, args) {
   }
 }
 
+/** A refusal, worded for the model to pass on rather than to work around. */
+const notDone = (reason) => ({
+  isError: true,
+  content: [{ type: 'text', text: `Not done — ${reason} Say so in a few words; do not try again unless asked.` }],
+})
+
+// ---------------------------------------------------------------------------
+// The taint rule
+// ---------------------------------------------------------------------------
+
+/** "evil.example/x" — a host with no scheme, which the extension still opens. */
+const HOSTLIKE = /^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?([/?#]|$)/i
+const LOCAL_HOST = /^(localhost|127(\.\d+){3}|\[::1\]|0\.0\.0\.0)$|\.localhost$/i
+
 /**
- * @param {{ allowWrites: boolean, gate?: { check: Function } | null }} options
+ * Where an address would send a request, as a host name — or null when it
+ * would not leave this machine (a file, a bare path, an inline data: picture,
+ * localhost) or is not an address at all ("back").
+ *
+ * Generous about what counts as leaving, because a wrong guess in that
+ * direction costs one question and a wrong guess in the other is the leak.
  */
-export function chromeServer({ allowWrites, gate = null }) {
+export function destination(raw) {
+  // Browsers drop tabs and newlines from inside a URL, so "ht\ntps://" is https.
+  const s = String(raw ?? '').replace(/[\t\n\r]/g, '').trim()
+  if (!s) return null
+  let u
+  try {
+    u = new URL(s.startsWith('//') ? `https:${s}` : HOSTLIKE.test(s) ? `https://${s}` : s)
+  } catch {
+    return null
+  }
+  if (u.protocol === 'http:' || u.protocol === 'https:') {
+    return LOCAL_HOST.test(u.hostname) ? null : u.host.replace(/^www\./, '')
+  }
+  // Stays here: files, inline data, and a drive letter parsed as a scheme (C:\…).
+  if (/^(file|data|blob|about):$/.test(u.protocol) || /^[a-z]:$/i.test(u.protocol)) return null
+  // javascript:, mailto:, a custom handler — each can carry text off the
+  // machine by its own means, and none has a host to name.
+  return `a ${u.protocol} address`
+}
+
+/** "a", "a and b", "a, b and c", "a, b and 3 more" — for a spoken question. */
+function spokenList(names) {
+  if (names.length <= 2) return names.join(' and ')
+  if (names.length === 3) return `${names[0]}, ${names[1]} and ${names[2]}`
+  return `${names[0]}, ${names[1]} and ${names.length - 2} more`
+}
+
+/**
+ * What this turn has read, and whether it may now take it somewhere else.
+ *
+ * Reading a signed-in page puts its words in front of the model, and some of
+ * those words were written by whoever sent the email or made the page. The
+ * cheap way to get something back out is not a click — clicks are already put
+ * to the user — but an address: "now open evil.example/?q=<the last three
+ * subjects>". Navigating, probing a URL and putting a remote picture on screen
+ * all send a request somewhere, and the request carries whatever the model
+ * wrote into it.
+ *
+ * So once a turn has read a page, the first time it reaches for a different
+ * site it asks, stating two facts the bridge knows for itself — what was read
+ * and where it is going — and the answer stands for the rest of the turn. A
+ * yes is not asked again. A no is not asked again either: a page that talked
+ * the model into one attempt can talk it into ten, and nobody should have to
+ * say no ten times. A turn that has read nothing, the site it was already
+ * reading, and anything on this machine never ask.
+ *
+ * One per connection, emptied when a Claude turn ends (server.mjs).
+ *
+ * @param {{ gate: { check: Function } }} deps
+ */
+export function createTaint({ gate }) {
+  /** Hosts whose words came back to the model this turn. */
+  const read = new Set()
+  /** The turn's one answer, once given. */
+  let answered = null
+  /** The question on screen, so parallel calls share it rather than queue another. */
+  let asking = null
+  /** Bumped by reset, so an answer arriving after its turn ended is dropped. */
+  let turn = 0
+
+  /**
+   * May the turn send a request to these addresses?
+   *
+   * @param {string|string[]} urls
+   * @param {string} verb  how the question opens: "Go to", "Open", "Look up"
+   * @returns {Promise<{ allowed: boolean, reason?: string }>}
+   */
+  async function leave(urls, verb = 'Go to') {
+    while (asking) await asking.catch(() => {})
+    if (!read.size) return { allowed: true }
+    const targets = [...new Set([urls].flat().map(destination).filter(Boolean))]
+    const to = targets.filter((t) => [...read].some((r) => r !== t))
+    if (!to.length) return { allowed: true }
+    const from = [...read].filter((r) => to.some((t) => t !== r))
+    if (answered) {
+      audit({ kind: 'gate', name: 'chrome.leave', args: { from, to }, decision: answered.allowed ? 'allow' : 'deny', reason: 'answered-this-turn' })
+      return answered
+    }
+    const askedIn = turn
+    asking = gate.check('chrome.leave', {
+      prompt: `You just read ${spokenList(from)}. ${verb} ${spokenList(to)} now?`,
+      args: { from, to },
+    })
+    try {
+      const verdict = await asking
+      if (askedIn === turn) answered = verdict
+      return verdict
+    } finally {
+      asking = null
+    }
+  }
+
+  return {
+    leave,
+    /** The page's own words just came back from `host` (null: could not tell which). */
+    noteRead(host) {
+      read.add(host || 'a page')
+    },
+    /** Which sites this turn has read. */
+    hosts: () => [...read],
+    /** A new turn: nothing read, nothing asked. */
+    reset() {
+      turn++
+      read.clear()
+      answered = null
+    },
+  }
+}
+
+/**
+ * @param {{ allowWrites: boolean, gate?: { check: Function } | null,
+ *           taint?: ReturnType<typeof createTaint> | null }} options
+ */
+export function chromeServer({ allowWrites, gate = null, taint = null }) {
+  /**
+   * A tool whose result is the page's own words — its text, its tree, a
+   * picture of it, what it logged. Which site they came from is noted for the
+   * taint rule, read from the browser after the fact rather than taken from
+   * the model.
+   */
+  const reading = (run) => async (args) => {
+    const out = await run(args)
+    if (taint && !out?.isError) {
+      const tab = await resolveTab(args?.tabId).catch(() => null)
+      taint.noteRead(tab === null ? null : await tabHost(tab))
+    }
+    return out
+  }
+
   const tools = [
     tool(
       'chrome_status',
@@ -714,6 +911,12 @@ export function chromeServer({ allowWrites, gate = null }) {
         tabId,
       },
       async (args) => {
+        // The taint rule: after this turn has read a page, a different site is
+        // put to the user before the address leaves the machine.
+        if (taint) {
+          const leaving = await taint.leave(args.url, 'Go to')
+          if (!leaving.allowed) return notDone(leaving.reason)
+        }
         const out = await forward('navigate')(args)
         if (out.isError) return out
         // Do not hand back until the page is really there. Everything the model
@@ -746,7 +949,7 @@ export function chromeServer({ allowWrites, gate = null }) {
           .catch(undefined)
           .describe('Cap the tree size. Large pages are worth capping.'),
       },
-      forward('read_page'),
+      reading(forward('read_page')),
     ),
 
     tool(
@@ -757,7 +960,7 @@ export function chromeServer({ allowWrites, gate = null }) {
         tabId,
         max_chars: z.union([z.number(), z.string()]).optional().catch(undefined),
       },
-      forward('get_page_text'),
+      reading(forward('get_page_text')),
     ),
 
     tool(
@@ -771,7 +974,7 @@ export function chromeServer({ allowWrites, gate = null }) {
         query: z.string().describe('What to look for, described naturally.'),
         tabId,
       },
-      forward('find'),
+      reading(forward('find')),
     ),
 
     tool(
@@ -780,7 +983,7 @@ export function chromeServer({ allowWrites, gate = null }) {
         'answer is visual, or when the user asks what something looks like — ' +
         'and put the result on the display rather than describing it.',
       { tabId },
-      async (args) => forward('computer')({ action: 'screenshot', ...args }),
+      reading(async (args) => forward('computer')({ action: 'screenshot', ...args })),
     ),
 
     tool(
@@ -792,7 +995,7 @@ export function chromeServer({ allowWrites, gate = null }) {
         amount: z.union([z.number(), z.string()]).optional().catch(undefined),
         tabId,
       },
-      async (args) =>
+      reading(async (args) =>
         forward('computer')({
           action: 'scroll',
           scroll_direction: args.direction ?? 'down',
@@ -800,6 +1003,7 @@ export function chromeServer({ allowWrites, gate = null }) {
           coordinate: [400, 400],
           tabId: args.tabId,
         }),
+      ),
     ),
 
     tool(
@@ -811,7 +1015,7 @@ export function chromeServer({ allowWrites, gate = null }) {
         onlyErrors: z.boolean().optional().catch(undefined),
         limit: z.union([z.number(), z.string()]).optional().catch(undefined),
       },
-      forward('read_console_messages'),
+      reading(forward('read_console_messages')),
     ),
 
     tool(
@@ -823,7 +1027,7 @@ export function chromeServer({ allowWrites, gate = null }) {
         requestId: z.string().optional().catch(undefined),
         limit: z.union([z.number(), z.string()]).optional().catch(undefined),
       },
-      forward('read_network_requests'),
+      reading(forward('read_network_requests')),
     ),
   ]
 
@@ -837,19 +1041,36 @@ export function chromeServer({ allowWrites, gate = null }) {
    * first — spoken, answered by voice or a click, and judged by the permission
    * gate — unless they started VAS with --writes, which trusts it outright.
    * Without a gate (no one to ask) the acting tools are not offered at all.
+   *
+   * The yes is a yes to the page the question named, so it is held to it. Up
+   * to half a minute passes while the question is asked — long enough for a
+   * redirect, a script that navigates the tab, or the user clicking somewhere
+   * else — and a click that was approved on mail.google.com must not land on
+   * whatever replaced it. So the tab and its page are captured with the
+   * question, read again after the answer, and the action runs on that tab
+   * only if it is still there and still on that page.
    */
   const guarded = (kind, run) => async (args) => {
-    if (!allowWrites) {
-      const prompt = await describeAction(kind, args ?? {})
-      const verdict = await gate.check('chrome.act', { prompt, args: { tool: kind } })
-      if (!verdict.allowed) {
-        return {
-          isError: true,
-          content: [{ type: 'text', text: `Not done — ${verdict.reason} Say so in a few words; do not try again unless asked.` }],
-        }
-      }
+    args = args ?? {}
+    if (allowWrites) return run(args)
+    const { prompt, tab, page } = await describeAction(kind, args)
+    // Nothing to bind the answer to — the browser is gone, or the tab is not
+    // one it will report — so there is nothing honest to ask about either.
+    if (tab === null || page === null) return notDone("I couldn't tell which page that is, so I left it.")
+    const verdict = await gate.check('chrome.act', { prompt, args: { tool: kind } })
+    if (!verdict.allowed) return notDone(verdict.reason)
+    const now = pageKey(await tabUrl(tab))
+    if (now !== page) {
+      audit({
+        kind: 'gate',
+        name: 'chrome.act',
+        args: { tool: kind, tabId: tab, asked: page, now },
+        decision: 'deny',
+        reason: 'page-changed',
+      })
+      return notDone('The page changed while I was asking, so I left it.')
     }
-    return run(args ?? {})
+    return run({ ...args, tabId: tab })
   }
 
   if (allowWrites || gate) {
@@ -933,8 +1154,9 @@ export function chromeServer({ allowWrites, gate = null }) {
       "The user's own Chrome, already signed in to everything they use. " +
       'Reach for it when the answer is behind a login or has to be seen on a ' +
       'real page. Reading is free. Clicking, typing and closing tabs are put ' +
-      'to the user as a spoken yes-or-no by the tools themselves, so do not ask ' +
-      'them yourself first — just call the tool.',
+      'to the user as a spoken yes-or-no by the tools themselves, and so is ' +
+      'going to a different site after reading a page, so do not ask them ' +
+      'yourself first — just call the tool.',
     // Behind tool search the model would never think to look, and "open my
     // GitHub notifications" would quietly become a web search instead.
     alwaysLoad: true,
