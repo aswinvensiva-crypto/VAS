@@ -42,6 +42,7 @@ export const DEFAULT_TIERS = {
   'correction.save': 'confirm',
   'jarvis.quit': 'confirm',
   'jarvis.unlock': 'confirm',
+  'settings.weaken': 'confirm',
   'camera.hidden': 'confirm',
   'voice.forget': 'confirm',
 }
@@ -210,7 +211,8 @@ export function createGate({
     const clickOk = source !== 'click' || permissions.allowClickConfirm
     const allowed = answer === 'yes' && ownerOk && clickOk
 
-    record(allowed ? 'allow' : 'deny', { reason: allowed ? answer : !ownerOk ? 'not-owner' : answer, owner: { verdict: who }, source })
+    const denied = !ownerOk ? 'not-owner' : !clickOk && answer === 'yes' ? 'click-off' : answer
+    record(allowed ? 'allow' : 'deny', { reason: allowed ? answer : denied, owner: { verdict: who }, source })
     if (allowed && tier === 'remember' && subject) {
       const apps = await loadApps()
       apps.allow[subject] = { name: subjectName ?? subject, grantedAt: new Date().toISOString() }
@@ -221,6 +223,7 @@ export function createGate({
       answer === 'timeout' ? 'No answer, so I left it.' :
       answer === 'cancelled' ? 'Cancelled.' :
       !ownerOk ? 'Only your voice can approve that.' :
+      !clickOk && answer === 'yes' ? 'Clicking is switched off for that — say yes instead.' :
       'Okay, I won\'t.'
     return { allowed: false, reason }
   }

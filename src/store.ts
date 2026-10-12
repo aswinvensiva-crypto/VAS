@@ -274,6 +274,8 @@ type State = {
   setEnrolling: (on: boolean) => void
   setConnected: (c: string[]) => void
   pushTurn: (t: Turn) => void
+  /** Take back a turn that turned out not to be one (someone else's voice). */
+  dropTurn: (id: string) => void
   appendToLastTurn: (text: string) => void
 
   applyUi: (patch: UiPatch) => void
@@ -372,6 +374,7 @@ export const useStore = create<State>((set) => ({
   setEnrolling: (enrolling) => set({ enrolling }),
   setConnected: (connected) => set({ connected }),
   pushTurn: (turn) => set((s) => ({ turns: [...s.turns.slice(-40), turn] })),
+  dropTurn: (id) => set((s) => ({ turns: s.turns.filter((t) => t.id !== id) })),
   appendToLastTurn: (text) =>
     set((s) => {
       const turns = [...s.turns]

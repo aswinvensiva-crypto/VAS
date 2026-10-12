@@ -64,15 +64,17 @@ export function voiceOf(utts, store = utterances) {
  * Is this question someone else's — the TV, a visitor — and so not one to
  * answer at all?
  *
- * Only once a voice is enrolled, and only on the bridge's record of every
- * segment it was spoken in. With "only my voice" set to 'all', /stt already
- * refuses to transcribe such speech; with the default 'actions' it is
- * transcribed (the face needs the words to tell a barge-in from an echo), and
- * this is where it stops — before any neuron, remembered app or Claude turn
- * can act on it. Audited, so a JARVIS that ignored you can be explained.
+ * Only when config.json's owner.require is 'all' ("only my voice"), only once
+ * a voice is enrolled, and only on the bridge's record of every segment it was
+ * spoken in. /stt already refuses to transcribe such speech under 'all'; this
+ * catches what reaches the face another way (Scribe, compressed audio), before
+ * any neuron, remembered app or Claude turn can act on it. Under 'actions'
+ * ("anyone can talk") and 'off' other voices are answered — only the gate,
+ * judging a yes, still cares whose voice it was. Audited, so a JARVIS that
+ * ignored you can be explained.
  */
-export function fromOtherVoice(heard, { enrolled, store = utterances, audit = defaultAudit } = {}) {
-  if (!enrolled || voiceOf(heard?.utts, store) !== 'other') return false
+export function fromOtherVoice(heard, { enrolled, require = 'all', store = utterances, audit = defaultAudit } = {}) {
+  if (require !== 'all' || !enrolled || voiceOf(heard?.utts, store) !== 'other') return false
   audit({
     kind: 'ask',
     name: 'ignored',

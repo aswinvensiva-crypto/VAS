@@ -10,6 +10,7 @@ import { WAKE_PARTS, normalize, tokenize } from '../matcher.mjs'
 import { fill, route } from '../router.mjs'
 import { parseConfirm } from '../../gate.mjs'
 import { kill_switch } from './basic.mjs'
+import { stepUrl } from './chrome.mjs'
 
 /**
  * Learning from you: corrections when JARVIS mishears, and routines you
@@ -290,8 +291,16 @@ async function pickTrigger(candidates, ctx) {
   return candidates.find((c) => c.trigger === answer) ?? null
 }
 
-const brokenBrain = (doc) =>
-  doc.errors.length ? { say: `Your ${USER_BRAIN} has a mistake in it, so I won't write to it until it's fixed.`, stop: true } : null
+/**
+ * Your brain.yml refused while the brain would not load it: bad YAML, or a
+ * mistake the brain rejects (an unknown neuron somewhere in it). Writing to
+ * such a file changes nothing that runs, so "Saved" or "Forgotten" would be
+ * untrue.
+ */
+const brokenBrain = (doc, brain) =>
+  doc.errors.length || brain.problem?.(String(doc))
+    ? { say: `Your ${USER_BRAIN} has a mistake in it, so I won't write to it until it's fixed.`, stop: true }
+    : null
 
 /**
  * The one way a routine is saved, by voice or by Claude: the trigger
@@ -306,7 +315,7 @@ async function saveRoutine({ trigger: given, steps }, ctx) {
   if (existing && existing.coverage === 1) {
     return { say: `"${trigger}" already does something. Say "forget the routine ${trigger}" first.`, stop: true }
   }
-  const broken = brokenBrain(readUserBrain())
+  const broken = brokenBrain(readUserBrain(), ctx.brain)
   if (broken) return broken
   const verdict = await ctx.gate.check('routine.save', {
     prompt: `When you say "${trigger}", I'll ${describe(steps)}. Save that?`,
@@ -316,7 +325,7 @@ async function saveRoutine({ trigger: given, steps }, ctx) {
 
   // Read again: the question can stay open long enough for a hand edit.
   const doc = readUserBrain()
-  const brokenNow = brokenBrain(doc)
+  const brokenNow = brokenBrain(doc, ctx.brain)
   if (brokenNow) return brokenNow
   const synapse = {
     name: `routine-${trigger.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
@@ -328,8 +337,9 @@ async function saveRoutine({ trigger: given, steps }, ctx) {
   const list = doc.get('synapses') ?? doc.createNode([])
   list.add(doc.createNode(synapse))
   doc.set('synapses', list)
+  if (ctx.brain.problem?.(String(doc))) return { say: "That routine wouldn't load, so I haven't saved it.", stop: true }
   writeFileSync(brainPath(), String(doc))
-  ctx.brain.reload()
+  if (ctx.brain.reload() === false) return { say: `I wrote it, but ${USER_BRAIN} didn't load. It's in the log.`, stop: true }
   ctx.audit({ kind: 'teach', name: synapse.name, args: { trigger, steps: steps.map((s) => s.neuron) } })
   return { say: `Saved. Say "${trigger}" any time.` }
 }
@@ -373,6 +383,16 @@ export const teach_routine = {
   async run({ trigger, steps }, ctx) {
     const r = resolveSteps(steps.join(', '), ctx, taughtNames(ctx.brain))
     if (!r.steps) return { say: r.problem ?? `Those steps are empty. ${CAN_DO}`, stop: true }
+    // A routine that opens a site, taught by Claude after reading a page,
+    // would carry the address out later as a plain spoken order — when no
+    // taint is there to ask. So it is asked about now, naming what was read.
+    if (ctx.taint) {
+      const urls = (await Promise.all(r.steps.map(stepUrl))).filter(Boolean)
+      if (urls.length) {
+        const leaving = await ctx.taint.leave(urls, 'Save a routine that opens')
+        if (!leaving.allowed) return { say: leaving.reason, stop: true }
+      }
+    }
     return saveRoutine({ trigger, steps: r.steps }, ctx)
   },
 }
@@ -392,11 +412,13 @@ export const forget_routine = {
       return signals.some((s) => normalize(typeof s.order === 'string' ? s.order : s.order.text).norm.join(' ') === want)
     })
     if (index < 0) return { say: `I don't have a routine called "${name}".` }
+    const broken = brokenBrain(doc, ctx.brain)
+    if (broken) return broken
     const verdict = await ctx.gate.check('routine.forget', { prompt: `Forget the routine "${name}"?` })
     if (!verdict.allowed) return { say: verdict.reason }
     list.delete(index)
     writeFileSync(brainPath(), String(doc))
-    ctx.brain.reload()
+    if (ctx.brain.reload() === false) return { say: `I took it out, but ${USER_BRAIN} didn't load. It's in the log.` }
     ctx.audit({ kind: 'teach', name: 'forget', args: { routine: name } })
     return { say: `Forgotten.` }
   },

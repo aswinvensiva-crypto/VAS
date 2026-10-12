@@ -46,11 +46,13 @@ const ACTION_LABELS = {
   'chrome.read': 'Read your Chrome tabs',
   'chrome.navigate': 'Open sites and searches in Chrome',
   'chrome.act': 'Click or type in Chrome',
+  'chrome.leave': 'Go to another site after reading a page (guards what was read)',
   'routine.save': 'Save a routine',
   'routine.forget': 'Forget a routine',
   'correction.save': 'Learn a correction',
   'jarvis.quit': 'Shut down VAS',
   'jarvis.unlock': 'Lift a lockdown',
+  'settings.weaken': 'Loosen a safeguard here while locked down or voice-only',
   'camera.hidden': 'Use the camera while VAS is hidden',
   'voice.forget': 'Forget your voice',
 }
@@ -91,6 +93,13 @@ const PermissionsPatch = z
 /** An error the drawer can show as it is. */
 const refuse = (status, reason) => Object.assign(new Error(reason), { status })
 
+/** How much a tier holds back, so a change can be told to loosen or tighten. */
+const TIER_RANK = { free: 0, remember: 1, confirm: 2, deny: 3 }
+const TIER_WORDS = { free: 'just do it', remember: 'ask once', confirm: 'ask every time', deny: 'never' }
+/** The same for whose voice counts. */
+const OWNER_RANK = { off: 0, actions: 1, all: 2 }
+const OWNER_WORDS = { off: 'anyone, with no voice check', actions: 'anyone talk', all: 'only your voice' }
+
 const aliasKey = (s) => s.trim().toLowerCase().replace(/\s+/g, ' ')
 
 /** "open_app: { app: notepad }" as "open app notepad". */
@@ -117,10 +126,30 @@ async function catalogNames() {
  * @param {object} deps.config       the bridge's live config, updated in place
  * @param {{ setConfig(c: object): void, status(): { speaker: boolean } }} deps.voice
  * @param {object} deps.corrections  the live corrections (bridge/corrections/store.mjs)
- * @param {{ userSynapses(): object[], reload(): void }} deps.brain
+ * @param {{ userSynapses(): object[], reload(): boolean, problem(text: string): string | null }} deps.brain
  * @param {() => object | null} deps.speaker  the enrolled voiceprint, if any
+ * @param {() => { check: Function } | null} [deps.gate]  the open face's
+ *        permission gate, which can ask out loud; null when no face is open
  */
-export function createSettings({ config, voice, corrections, brain, speaker, audit = defaultAudit }) {
+export function createSettings({ config, voice, corrections, brain, speaker, gate = () => null, audit = defaultAudit }) {
+  /**
+   * Loosening a safeguard from here, once the owner has asked for more than a
+   * click: lockdown on, or "clicking Confirm counts as a yes" turned off. The
+   * drawer must not be the way around either — anyone at the keyboard can open
+   * it — so the change is put to the permission gate like any action: under
+   * lockdown only lifting it can be asked at all ("jarvis.unlock"), and with
+   * clicks off only a spoken yes (the owner's, once a voice is enrolled)
+   * approves. Otherwise a click here is as good as a click on Confirm, and
+   * nothing is asked.
+   */
+  async function approved(action, prompt) {
+    const g = gate()
+    if (!g) throw refuse(409, 'Open VAS so I can ask you about that first.')
+    const verdict = await g.check(action, { prompt, args: { from: 'settings' } })
+    if (!verdict.allowed) throw refuse(403, verdict.reason ?? 'Not changed.')
+  }
+  const guarded = (p) => p.lockdown || !p.allowClickConfirm
+
   /**
    * Make a config the one in effect. In place, because the voice pipeline,
    * the gate and /health all hold this same object; then the voice engine
@@ -184,6 +213,10 @@ export function createSettings({ config, voice, corrections, brain, speaker, aud
   }
 
   async function general(patch) {
+    const wanted = patch.owner?.require
+    if (wanted && OWNER_RANK[wanted] < OWNER_RANK[config.owner.require] && guarded(await loadPermissions())) {
+      await approved('settings.weaken', `Let ${OWNER_WORDS[wanted]}?`)
+    }
     applyConfig(await updateConfig(patch))
     audit({ kind: 'settings', name: 'general', args: patch })
   }
@@ -245,22 +278,49 @@ export function createSettings({ config, voice, corrections, brain, speaker, aud
       throw refuse(404, 'You have no routines yet.')
     }
     const doc = YAML.parseDocument(text)
-    if (doc.errors.length) throw refuse(409, `${USER_BRAIN} has a mistake in it; fix it by hand first.`)
+    // Valid YAML is not enough: a file the brain refuses (an unknown neuron
+    // somewhere in it) is not the one in effect, and editing it would report
+    // a routine gone that keeps running.
+    if (doc.errors.length || brain.problem?.(text)) {
+      throw refuse(409, `${USER_BRAIN} has a mistake in it; fix it by hand first.`)
+    }
     const list = doc.get('synapses')
     const index = (list?.items ?? []).findIndex((item) => item?.toJSON?.()?.name === name)
     if (index < 0) throw refuse(404, `There is no routine called "${name}".`)
     list.delete(index)
     await writeTextAtomic(USER_BRAIN, String(doc))
-    brain.reload()
+    if (brain.reload() === false) throw refuse(500, `${USER_BRAIN} was changed but did not load; it is in the log.`)
     audit({ kind: 'settings', name: 'routine.delete', args: { routine: name } })
   }
 
   async function permissions(patch) {
-    const p = await loadPermissions()
-    for (const [action, tier] of Object.entries(patch.tiers ?? {})) {
+    let p = await loadPermissions()
+    for (const action of Object.keys(patch.tiers ?? {})) {
       if (!Object.hasOwn(DEFAULT_TIERS, action) && !Object.hasOwn(p.tiers, action)) {
         throw refuse(400, `"${action}" is not an action JARVIS asks about.`)
       }
+    }
+    if (p.lockdown && patch.lockdown === false) {
+      await approved('jarvis.unlock', 'Lift the lockdown?')
+      // Lifted on its own first, so anything else in this change is judged
+      // as it would be after unlocking — not refused for the lockdown it ends.
+      p.lockdown = false
+      await savePermissions(p)
+      audit({ kind: 'settings', name: 'permissions', args: { lockdown: false } })
+      p = await loadPermissions()
+    }
+    if (guarded(p)) {
+      const looser = []
+      if (!p.allowClickConfirm && patch.allowClickConfirm === true) looser.push('a click approve things again')
+      for (const [action, tier] of Object.entries(patch.tiers ?? {})) {
+        const fallback = DEFAULT_TIERS[action] ?? 'confirm'
+        const before = p.tiers[action] ?? fallback
+        const after = tier ?? fallback
+        if (TIER_RANK[after] < TIER_RANK[before]) looser.push(`"${ACTION_LABELS[action] ?? action}" be ${TIER_WORDS[after]}`)
+      }
+      if (looser.length) await approved('settings.weaken', `Let ${looser.join(', and ')}?`)
+    }
+    for (const [action, tier] of Object.entries(patch.tiers ?? {})) {
       if (tier === null) delete p.tiers[action]
       else p.tiers[action] = tier
     }

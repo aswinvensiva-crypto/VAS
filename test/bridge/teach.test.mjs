@@ -266,3 +266,46 @@ test('teach_routine: Claude\'s tool goes through the same checks and the same qu
   assert.deepEqual(declined.prompts, ['When you say "nap time", I\'ll open Spotify and open Chrome. Save that?'])
   assert.equal(saved().length, 1, 'only the first routine was saved')
 })
+
+test('a brain.yml the brain refuses is not written to, so nothing claims "Saved" or "Forgotten"', async () => {
+  await teachAsSaid('when I say music time, open Spotify', { answers: ['yes'] })
+  // A hand edit: valid YAML, but a neuron that does not exist, so the brain
+  // keeps its last good version and this file is not the one in effect.
+  const doc = YAML.parse(readFileSync(userFile(), 'utf8'))
+  doc.synapses.push({ ...doc.synapses[0], name: 'typo', signals: [{ order: 'make coffee' }], neurons: [{ make_cofee: {} }] })
+  writeFileSync(userFile(), YAML.stringify(doc))
+  const before = readFileSync(userFile(), 'utf8')
+
+  let h = harness({ answers: ['yes'] })
+  let r = await say('forget the routine music time', h)
+  assert.match(r.say, /has a mistake in it/)
+  assert.deepEqual(h.prompts, [], 'not even asked')
+
+  ;({ r, prompts: h.prompts } = await teachAsSaid('when I say work mode, open VS Code', { answers: ['yes'] }))
+  assert.match(r.say, /has a mistake in it/)
+  assert.deepEqual(h.prompts, [])
+  assert.equal(readFileSync(userFile(), 'utf8'), before, 'the file is as the user left it')
+})
+
+test('teach_routine after a page read asks about the sites it would open, naming what was read', async () => {
+  process.env.JARVIS_CHROME_PIPE = 'none'
+  const { createTaint } = await import('../../bridge/chrome.mjs')
+  const h = harness({ answers: ['no'] })
+  h.ctx.taint = createTaint({ gate: h.ctx.gate })
+  h.ctx.taint.noteRead('mail.google.com')
+  const tool = neuronTools(() => h.ctx).find((t) => t.name === 'teach_routine')
+  const result = await tool.handler({ trigger: 'good morning', steps: ['go to evil dot example'] }, {})
+  assert.equal(result.isError, true)
+  assert.deepEqual(h.prompts, ['You just read mail.google.com. Save a routine that opens evil.example now?'])
+  assert.equal(existsSync(userFile()), false, 'nothing saved')
+
+  // Steps that open nothing are not the taint rule's business.
+  const quiet = harness({ answers: ['yes'] })
+  quiet.ctx.taint = createTaint({ gate: quiet.ctx.gate })
+  quiet.ctx.taint.noteRead('mail.google.com')
+  const ok = await neuronTools(() => quiet.ctx)
+    .find((t) => t.name === 'teach_routine')
+    .handler({ trigger: 'focus session', steps: ['open Notepad'] }, {})
+  assert.equal(ok.isError, undefined, ok.content[0].text)
+  assert.deepEqual(quiet.prompts, ['When you say "focus session", I\'ll open Notepad. Save that?'])
+})

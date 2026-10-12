@@ -87,6 +87,8 @@ export default function App() {
   const turn = useRef(0)
   const booting = useRef(false)
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** When the open listening window closes (0: none is open). */
+  const idleDeadline = useRef(0)
   /** The tray's "Listening for Hey Jarvis" switch. Off means the wake word is
    *  ignored; the hotkey and Space still start a turn, because those are an
    *  explicit request rather than something overheard. */
@@ -115,6 +117,7 @@ export default function App() {
   const goDormant = () => {
     pendingConfirm.current?.finish({ source: 'voice', cancelled: true })
     clearIdle()
+    idleDeadline.current = 0
     silence()
     turn.current++
     const s = store.getState()
@@ -133,6 +136,7 @@ export default function App() {
     s.setCaption('')
     s.setPhase('listening')
     sfx.play('listen')
+    idleDeadline.current = Date.now() + window
     idleTimer.current = setTimeout(goDormant, window)
   }
 
@@ -144,6 +148,9 @@ export default function App() {
     const mine = ++turn.current
     const stale = () => mine !== turn.current
 
+    // The listening window this turn interrupts, handed back unchanged if it
+    // turns out to be someone else's (see `ignored` below).
+    const deadline = idleDeadline.current
     clearIdle()
     const s = store.getState()
     // Last turn's panels and blades go now, before the new answer starts
@@ -151,9 +158,13 @@ export default function App() {
     s.clearPanels()
     s.clearBlades()
     s.setCaption('')
-    s.pushTurn({ id: newId(), role: 'user', text: said })
+    const userTurnId = newId()
+    s.pushTurn({ id: userTurnId, role: 'user', text: said })
     s.setPhase('thinking')
 
+    // Whatever was still talking outside a turn — a notice, a voice demo —
+    // stops: a new answer never plays over it, and nothing could stop it later.
+    speaker.current?.cancel()
     const spk = createSpeaker()
     speaker.current = spk
     sfx.duck(true)
@@ -164,6 +175,8 @@ export default function App() {
     let filled = false
     /** What the turn asked for afterwards — "go to sleep" stands him down. */
     let after: string | undefined
+    /** The bridge heard someone else's voice and answered nothing. */
+    let ignoredTurn = false
 
     try {
       const { text, after: next, ignored } = await ask(said, history.current, {
@@ -201,6 +214,7 @@ export default function App() {
         },
       }, heard)
       after = next
+      ignoredTurn = Boolean(ignored)
 
       if (stale()) return
 
@@ -233,10 +247,21 @@ export default function App() {
         music.duck(false)
         store.getState().setActiveTool(null)
         music.working(false)
+        if (ignoredTurn) {
+          // Not a turn at all: their words come off the transcript, and the
+          // window goes back to closing when it would have — no chime, and no
+          // fresh follow-up, or a TV talking would keep him awake for good.
+          store.getState().dropTurn(userTurnId)
+          const left = deadline - Date.now()
+          if (left <= 0) goDormant()
+          else {
+            store.getState().setPhase('listening')
+            idleTimer.current = setTimeout(goDormant, left)
+          }
+        } else if (after === 'dormant') goDormant()
         // Stay open. Having to say his name again to add one more sentence is
         // the difference between a conversation and a vending machine —
         // unless the turn itself was "go to sleep".
-        if (after === 'dormant') goDormant()
         else listen(FOLLOW_UP_MS)
       }
     }
@@ -287,10 +312,13 @@ export default function App() {
     // Answer to his name. Deliberately NOT awaited any more: the microphone is
     // already open and the echo filter knows his voice, so the user can talk
     // straight over the greeting instead of waiting it out.
+    speaker.current?.cancel()
     const greeting = createSpeaker()
     speaker.current = greeting
     greeting.say(attention())
-    void greeting.end()
+    void greeting.end().then(() => {
+      if (speaker.current === greeting) speaker.current = null
+    })
 
     listen(AWAIT_SPEECH_MS)
   }
@@ -758,7 +786,10 @@ export default function App() {
         const demo = createSpeaker()
         speaker.current = demo
         demo.say(`Voice set to ${name.replace(/\(.*?\)/g, '').trim()}. How's this?`)
-        void demo.end()
+        // Let go once done, or a notice would never find him idle.
+        void demo.end().then(() => {
+          if (speaker.current === demo) speaker.current = null
+        })
         return
       }
 
@@ -801,6 +832,7 @@ export default function App() {
         speaker.current = t
         t.say('Audio test. If you can hear this, speech output is working.')
         void t.end().then(() => {
+          if (speaker.current === t) speaker.current = null
           const d = (window as unknown as Record<string, Record<string, unknown>>).__tts
           console.info('[jarvis] audio test →', d)
           if (d && d.started === 0 && d.rescued === 0) {

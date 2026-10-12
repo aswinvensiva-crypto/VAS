@@ -69,6 +69,20 @@ test('destination: a host to name, or null for this machine and non-addresses', 
   assert.equal(destination('mailto:x@evil.example?body=secret'), 'a mailto: address')
 })
 
+test('destination: an address with no scheme is judged as the https the extension opens', () => {
+  const { destination } = chrome
+  // Each of these once parsed as "nothing" and walked past the question.
+  assert.equal(destination('x_y.evil.example/?q=subjects'), 'x_y.evil.example')
+  assert.equal(destination('evil.example./?q=subjects'), 'evil.example')
+  assert.equal(destination('a@evil.example/?q=subjects'), 'evil.example')
+  assert.equal(destination('evil\u3002example/?q=subjects'), 'evil.example')
+  assert.equal(destination('evil.example:8080/x'), 'evil.example:8080', 'a port is not a scheme')
+  assert.equal(destination('localhost:5173/x'), null)
+  assert.equal(destination('intranet/x'), 'intranet')
+  // Unreadable is asked about, never assumed to stay here.
+  assert.equal(destination('http://[bad/'), 'an address I could not read')
+})
+
 test('nothing read this turn: nothing is asked', async () => {
   const gate = fakeGate()
   const taint = chrome.createTaint({ gate })
@@ -94,14 +108,17 @@ test('after a read: same site and this machine are free, a different site asks n
   assert.deepEqual(gate.asked[0].args, { from: ['mail.google.com'], to: ['evil.example'] })
 })
 
-test('the answer stands for the turn: a yes is not asked again, nor is a no', async () => {
-  const yes = fakeGate('yes')
+test('a yes covers the sites it named; a no stands for the turn', async () => {
+  const yes = fakeGate('yes', 'yes')
   const t1 = chrome.createTaint({ gate: yes })
   t1.noteRead('mail.google.com')
   assert.equal((await t1.leave('https://a.example/')).allowed, true)
-  t1.noteRead('bank.example')
-  assert.equal((await t1.leave('https://b.example/')).allowed, true)
+  assert.equal((await t1.leave('https://a.example/more')).allowed, true)
   assert.equal(yes.asked.length, 1)
+  // A yes to one site is not a yes to the next: that is the two-step leak.
+  assert.equal((await t1.leave('https://b.example/?q=subjects')).allowed, true)
+  assert.equal(yes.asked.length, 2)
+  assert.deepEqual(yes.asked[1].args.to, ['b.example'])
 
   const no = fakeGate('no', 'yes')
   const t2 = chrome.createTaint({ gate: no })
@@ -113,18 +130,23 @@ test('the answer stands for the turn: a yes is not asked again, nor is a no', as
   assert.equal((await t2.leave('https://mail.google.com/')).allowed, true)
 })
 
-test('reset starts a new turn: nothing read, nothing answered', async () => {
-  const gate = fakeGate('no', 'no')
+test('a new turn keeps what was read and asks afresh', async () => {
+  // The agent session remembers every turn, so what it read last turn can be
+  // carried out by this one.
+  const gate = fakeGate('no', 'no', 'no')
   const taint = chrome.createTaint({ gate })
   taint.noteRead('mail.google.com')
   await taint.leave('https://evil.example/')
-  taint.reset()
-  assert.deepEqual(taint.hosts(), [])
-  assert.deepEqual(await taint.leave('https://evil.example/'), { allowed: true })
+  taint.endTurn()
+  assert.deepEqual(taint.hosts(), ['mail.google.com'])
+  assert.equal((await taint.leave('https://evil.example/?q=subjects')).allowed, false)
+  assert.equal(gate.asked.length, 2, 'the new turn asks afresh')
+  assert.equal(gate.asked[1].prompt, 'Earlier you had me read mail.google.com. Go to evil.example now?')
+  taint.noteRead('docs.google.com')
+  taint.endTurn()
   taint.noteRead('docs.google.com')
   await taint.leave('https://evil.example/')
-  assert.equal(gate.asked.length, 2, 'the new turn asks afresh')
-  assert.match(gate.asked[1].prompt, /^You just read docs\.google\.com\./)
+  assert.match(gate.asked[2].prompt, /^You just read mail\.google\.com and docs\.google\.com\./)
 })
 
 test('a page whose site could not be told still counts, and never matches', async () => {
@@ -149,19 +171,25 @@ test('several sites are named in the one question, a long list cut short', async
   assert.equal(four.asked[0].prompt, 'You just read a.example, b.example and 2 more. Go to e.example now?')
 })
 
-test('calls made side by side share one question', async () => {
+test('calls made side by side wait for the question on screen, and share its answer', async () => {
   let release
   const held = new Promise((r) => (release = r))
-  const gate = fakeGate(() => held.then(() => ({ allowed: true })))
+  const gate = fakeGate(() => held.then(() => ({ allowed: true })), 'no')
   const taint = chrome.createTaint({ gate })
   taint.noteRead('mail.google.com')
-  const both = Promise.all([taint.leave('https://a.example/'), taint.leave('https://b.example/')])
+  const all = Promise.all([
+    taint.leave('https://a.example/'),
+    taint.leave('https://a.example/logo.png'),
+    taint.leave('https://b.example/'),
+  ])
   await new Promise((r) => setTimeout(r, 10))
+  assert.equal(gate.asked.length, 1, 'one question at a time')
   release()
-  const [a, b] = await both
+  const [a, logo, b] = await all
   assert.equal(a.allowed, true)
-  assert.equal(b.allowed, true)
-  assert.equal(gate.asked.length, 1)
+  assert.equal(logo.allowed, true, 'the same site rides on that yes')
+  assert.equal(b.allowed, false, 'a different one is asked about on its own')
+  assert.equal(gate.asked.length, 2)
 })
 
 test('an answer that arrives after its turn has ended is not carried into the next', async () => {
@@ -172,7 +200,7 @@ test('an answer that arrives after its turn has ended is not carried into the ne
   taint.noteRead('mail.google.com')
   const late = taint.leave('https://evil.example/')
   await new Promise((r) => setTimeout(r, 10))
-  taint.reset()
+  taint.endTurn()
   release()
   assert.equal((await late).allowed, false)
   taint.noteRead('docs.google.com')

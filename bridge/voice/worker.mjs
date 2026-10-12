@@ -71,8 +71,10 @@ function firstKeyword(kws, samples) {
 
 const ops = {
   /** The live spotter: first keyword in the clip, or null (see firstKeyword). */
-  kws(samples, { modelDir, keywordsFile }) {
-    const kws = engine(`kws|${modelDir}|${keywordsFile}`, () => {
+  kws(samples, { modelDir, keywordsFile, version = 0 }) {
+    // The file is rewritten in place when the keywords or their thresholds
+    // change, so the version (engine.mjs) is what tells a new one apart.
+    const kws = engine(`kws|${modelDir}|${keywordsFile}|${version}`, () => {
       // An edited keywords file is a new spotter; the old one is dropped.
       for (const k of cache.keys()) if (k.startsWith('kws|')) cache.delete(k)
       return spotter(modelDir, keywordsFile)

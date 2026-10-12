@@ -104,6 +104,10 @@ function compile(syn, source, index) {
   }
 }
 
+// YAML's errors carry a code frame after the first line; the first line
+// already says what and where, and a log line should stay one line.
+const firstLine = (err) => String(err?.message ?? err).split('\n')[0]
+
 /**
  * Load both files and keep the merged brain current.
  *
@@ -134,11 +138,10 @@ export function createBrain({ known, onError = (m) => console.warn(`[jarvis] bra
       const nextCompiled = next.synapses.map((s, i) => compile(s, 'user', i))
       user = next
       userCompiled = nextCompiled
+      return true
     } catch (err) {
-      // YAML's errors carry a code frame after the first line; the first line
-      // already says what and where, and a log line should stay one line.
-      const why = String(err?.message ?? err).split('\n')[0]
-      onError(`${USER_BRAIN} not loaded (${why}); keeping the previous version`)
+      onError(`${USER_BRAIN} not loaded (${firstLine(err)}); keeping the previous version`)
+      return false
     }
   }
 
@@ -160,9 +163,23 @@ export function createBrain({ known, onError = (m) => console.warn(`[jarvis] bra
     synapses: () => compiled,
     /** Routines you taught or wrote, as stored. */
     userSynapses: () => user.synapses,
+    /** Read your file again; false when it did not load (the last good one stays). */
     reload() {
-      loadUser()
+      const ok = loadUser()
       rebuild()
+      return ok
+    },
+    /**
+     * Why `text` would not load as your brain.yml, or null if it would — so a
+     * change can be checked before it is written, not discovered after.
+     */
+    problem(text) {
+      try {
+        parseBrain(text, { known }).synapses.forEach((s, i) => compile(s, 'user', i))
+        return null
+      } catch (err) {
+        return firstLine(err)
+      }
     },
     close: stop,
   }

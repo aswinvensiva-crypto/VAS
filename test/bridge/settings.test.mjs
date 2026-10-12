@@ -239,10 +239,25 @@ test('permissions: tiers, reset to default, lockdown', async () => {
   assert.equal(r.body.settings.permissions.lockdown, true)
   assert.equal(readData('permissions.json').tiers['app.close'], 'deny')
 
-  const reset = await send('POST', '/settings/permissions', { tiers: { 'app.close': null }, lockdown: false })
-  assert.equal(reset.body.settings.permissions.actions.find((a) => a.action === 'app.close').tier, 'confirm')
-  assert.equal(readData('permissions.json').tiers['app.close'], undefined)
-  assert.equal(readData('permissions.json').lockdown, false)
+  // Lifting it is a safeguard coming off: with no face open to ask, refused.
+  const blind = await send('POST', '/settings/permissions', { tiers: { 'app.close': null }, lockdown: false })
+  assert.equal(blind.status, 409)
+  assert.match(blind.body.reason, /Open VAS/)
+  assert.equal(readData('permissions.json').lockdown, true)
+
+  // With a face open it is put to the gate as unlocking, where a click counts
+  // while clicks do — and once lifted, the rest is judged as unlocked.
+  const face = await openFace(() => ({ source: 'click', approved: true }))
+  try {
+    const reset = await send('POST', '/settings/permissions', { tiers: { 'app.close': null }, lockdown: false })
+    assert.equal(reset.status, 200, JSON.stringify(reset.body))
+    assert.equal(reset.body.settings.permissions.actions.find((a) => a.action === 'app.close').tier, 'confirm')
+    assert.equal(readData('permissions.json').tiers['app.close'], undefined)
+    assert.equal(readData('permissions.json').lockdown, false)
+    assert.deepEqual(face.prompts, ['Lift the lockdown?'])
+  } finally {
+    await face.close()
+  }
 
   assert.equal((await send('POST', '/settings/permissions', { tiers: { 'launch.missiles': 'free' } })).status, 400)
   assert.equal((await send('POST', '/settings/permissions', { tiers: { 'app.close': 'sometimes' } })).status, 400)
@@ -262,6 +277,57 @@ test('a hand edit to config.json applies without a restart; a broken one is igno
   assert.equal((await get('/health')).user.name, 'Pepper', 'a half-written file keeps the settings in effect')
   assert.match(bridge.log(), /config\.json changed but was not applied/)
   writeFileSync(file('config.json'), '{}')
+})
+
+/** A face on the socket answering every question with `reply(m)`, keeping the prompts. */
+async function openFace(reply) {
+  const ws = new WebSocket(`ws://127.0.0.1:${bridge.port}/ws`, ['vas.v1', `vas.token.${bridge.token}`], {
+    headers: { origin: 'app://vas' },
+  })
+  await new Promise((r) => ws.once('open', r))
+  const prompts = []
+  ws.on('message', (raw) => {
+    const m = JSON.parse(raw.toString())
+    if (m.type !== 'confirm') return
+    prompts.push(m.prompt)
+    ws.send(JSON.stringify({ type: 'reply', id: m.id, ...reply(m) }))
+  })
+  return {
+    prompts,
+    close: () =>
+      new Promise((r) => {
+        ws.once('close', () => setTimeout(r, 50))
+        ws.close()
+      }),
+  }
+}
+
+test('with clicks switched off, loosening a safeguard here needs a spoken yes', async () => {
+  writeFileSync(file('permissions.json'), JSON.stringify({ allowClickConfirm: false, tiers: { 'app.close': 'deny' } }))
+  const clicker = await openFace(() => ({ source: 'click', approved: true }))
+  try {
+    const r = await send('POST', '/settings/permissions', { tiers: { 'app.close': 'free' } })
+    assert.equal(r.status, 403)
+    assert.match(r.body.reason, /say yes instead/)
+    assert.equal(readData('permissions.json').tiers['app.close'], 'deny', 'nothing changed')
+    assert.deepEqual(clicker.prompts, ['Let "Close an app" be just do it?'])
+    // Tightening is never asked about.
+    assert.equal((await send('POST', '/settings/permissions', { tiers: { 'app.open': 'deny' } })).status, 200)
+    assert.equal(clicker.prompts.length, 1)
+  } finally {
+    await clicker.close()
+  }
+
+  const speaker = await openFace(() => ({ source: 'voice', text: 'yes', raw: 'yes' }))
+  try {
+    const r = await send('POST', '/settings/permissions', { allowClickConfirm: true })
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual(speaker.prompts, ['Let a click approve things again?'])
+    assert.equal(readData('permissions.json').allowClickConfirm, true)
+  } finally {
+    await speaker.close()
+  }
+  writeFileSync(file('permissions.json'), '{}')
 })
 
 test('a hand edit to permissions.json counts from the next question on', async () => {
@@ -299,4 +365,11 @@ test('a hand edit to permissions.json counts from the next question on', async (
   } finally {
     ws.close()
   }
+})
+
+test('every action on the Permissions tab is named in words, not by its key', async () => {
+  const s = await get('/settings')
+  const unnamed = s.permissions.actions.filter((a) => a.label === a.action).map((a) => a.action)
+  assert.deepEqual(unnamed, [])
+  assert.ok(s.permissions.actions.some((a) => a.action === 'chrome.leave'))
 })

@@ -70,6 +70,13 @@ export function siteUrl(spoken, sites = SITES) {
 
 const searchUrl = (q) => `https://www.google.com/search?q=${encodeURIComponent(q)}`
 
+/** The address a routine step would open, or null for a step that opens none. */
+export async function stepUrl({ neuron, params }) {
+  if (neuron === 'chrome_open') return siteUrl(String(params?.site ?? ''), await knownSites()) ?? searchUrl(String(params?.site ?? ''))
+  if (neuron === 'chrome_search') return searchUrl(String(params?.query ?? ''))
+  return null
+}
+
 const UNAVAILABLE = "Chrome isn't available — open it with the Claude extension on."
 
 async function unavailable(ctx) {
@@ -110,6 +117,14 @@ export const chrome_search = {
   params: { query: z.string().min(1).max(300) },
   async run({ query }, ctx) {
     if (await unavailable(ctx)) return { fallthrough: true }
+    // A query is an address too: after a page read, words from it could ride
+    // out to Google in the search box (see chrome_open).
+    if (ctx.taint) {
+      const leaving = await ctx.taint.leave(searchUrl(query), 'Look up')
+      if (!leaving.allowed) return { say: leaving.reason, stop: true }
+    }
+    const verdict = await ctx.gate.check('chrome.navigate', { prompt: `Search for ${query}?`, args: { url: searchUrl(query) } })
+    if (!verdict.allowed) return { say: verdict.reason }
     let tab
     try {
       ;({ tabId: tab } = await ctx.chrome.open(searchUrl(query)))
@@ -132,6 +147,9 @@ export const chrome_read_tab = {
   params: {},
   async run(_params, ctx) {
     if (await unavailable(ctx)) return { say: UNAVAILABLE }
+    // Free by default; the Permissions tab or lockdown can say otherwise.
+    const verdict = await ctx.gate.check('chrome.read', { prompt: 'Read the page you are on?' })
+    if (!verdict.allowed) return { say: verdict.reason }
     const url = await ctx.chrome.currentUrl()
     if (!url) return { say: "I can't see a Chrome window to read." }
     if (!/^https?:\/\//i.test(url)) return { say: "That page isn't one I can read." }

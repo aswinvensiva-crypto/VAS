@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { useStore, accentFor, type Phase } from '../store'
 import { Suggestions } from './Suggestions'
@@ -310,7 +311,12 @@ export function Hud() {
 
       {ui.chrome.suggestions && <Suggestions />}
 
-      {confirm && (
+      {/* At the document root, not inside .hud: the HUD is its own stacking
+          context (z-index 4), so inside it the card's z-index 40 would still
+          sit under the Settings drawer (30) — and a question must never be
+          hidden behind anything. */}
+      {confirm &&
+        createPortal(
         <div className="confirm-card" role="alertdialog" aria-label="JARVIS is asking for your permission">
           <div className="confirm-prompt">{confirm.prompt}</div>
           <div className="confirm-hint">say yes or no</div>
@@ -322,8 +328,9 @@ export function Hud() {
               Cancel
             </button>
           </div>
-        </div>
-      )}
+        </div>,
+          document.body,
+        )}
 
       {error && <div className="error">{error}</div>}
 

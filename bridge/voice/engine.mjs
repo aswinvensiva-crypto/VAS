@@ -64,8 +64,16 @@ export function createVoiceEngine({ config }) {
   const installed = (name) => existsSync(modelPath(name))
   const whisperName = () => config.stt.model // 'whisper-base' | 'whisper-small'
 
-  /** Rebuild the keywords file from the current config; null if unusable. */
+  /**
+   * Rebuild the keywords file from the current config; null if unusable.
+   * The file keeps its name, so each rebuild gets a new version number: the
+   * worker keeps its spotter by (file, version), and a new version is what
+   * makes it build one from the new file — wake tuning and hand edits apply
+   * at once rather than at the next start.
+   */
+  let keywordsVersion = 0
   function refreshKeywords() {
+    keywordsVersion++
     if (!installed('kws')) return (keywords = null)
     const out = writeKeywordsFile(config.wake.keywords, modelPath('kws'), dataDir())
     for (const e of out.errors) console.warn(`[jarvis] wake word: ${e}`)
@@ -92,7 +100,7 @@ export function createVoiceEngine({ config }) {
     /** @returns {Promise<{keyword: string, start: number|null, end: number|null} | null>} */
     spot(samples) {
       if (!keywords) return Promise.resolve(null)
-      return call('fast', 'kws', samples, { modelDir: modelPath('kws'), keywordsFile: keywords })
+      return call('fast', 'kws', samples, { modelDir: modelPath('kws'), keywordsFile: keywords, version: keywordsVersion })
     },
     /**
      * Which of `clips` would wake JARVIS if the wake keywords were `trial`

@@ -109,6 +109,16 @@ export function Settings() {
   }
 
   const onKeyDown = (e: ReactKeyboardEvent) => {
+    const el = e.target as HTMLElement
+    // Typing in a field, or a list where a letter picks an option. A checkbox
+    // or a button is not typing.
+    const typing = el.matches('input:not([type=checkbox]):not([type=radio]):not([type=button]), textarea, select')
+    const plain = !e.metaKey && !e.ctrlKey && !e.altKey
+    // With the drawer itself focused rather than one of its controls, Space
+    // and V are the window's: talk, and hear the next voice (which the Voice
+    // field's hint promises). A control reached with Tab keeps them, so Space
+    // still ticks a box for someone using the keyboard.
+    if (el === root.current && plain && (e.key === ' ' || e.key === 'v')) return
     e.stopPropagation()
     if (e.key === 'Escape') {
       e.preventDefault()
@@ -118,9 +128,7 @@ export function Settings() {
     // The window's own S handler never sees keys pressed in here, so the
     // drawer closes itself — except while typing, or in a list, where S picks
     // the option that starts with it.
-    const tag = (e.target as HTMLElement).tagName
-    const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
-    if (e.key === 's' && !typing && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    if (e.key === 's' && !typing && !e.repeat && plain) {
       e.preventDefault()
       close()
     }
@@ -136,6 +144,14 @@ export function Settings() {
       tabIndex={-1}
       ref={root}
       onKeyDown={onKeyDown}
+      onClick={(e) => {
+        // A click leaves focus on the box or button it hit, where the next
+        // Space would press it again — "Space to talk" turning Lockdown off.
+        // So after a pointer click focus goes back to the drawer. (A click
+        // from the keyboard has detail 0, and keeps its focus.)
+        const el = e.target as HTMLElement
+        if (e.detail > 0 && el.matches('button, input[type=checkbox], input[type=radio]')) root.current?.focus()
+      }}
       aria-busy={busy}
     >
       <div className="settings-head">
@@ -544,7 +560,7 @@ function VoiceTab({ data, run, onLearn }: { data: SettingsSnapshot; run: Run; on
       <p className="settings-lead">
         {v.enrolled
           ? `Your voice is learned (${v.clips} recordings, ${day(v.enrolledAt)}). Other voices can't wake JARVIS or approve actions, depending on “Whose voice counts” in General.`
-          : 'JARVIS answers anyone until he has learned your voice. It takes eight short sentences.'}
+          : 'JARVIS answers anyone until he has learned your voice. It takes about a dozen short lines.'}
       </p>
       {!v.available && <div className="settings-empty">The voice model isn't installed yet — download the voice models first.</div>}
       <div className="settings-actions">

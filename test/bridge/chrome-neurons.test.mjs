@@ -209,3 +209,25 @@ test('chrome_read_tab: each way it can fail is one sentence, said locally', asyn
   })
   assert.deepEqual(await neurons.chrome_read_tab.run({}, broken), { say: "Chrome wouldn't open it (no tab)." })
 })
+
+test('chrome_search and chrome_read_tab are put to the gate, so Never and lockdown hold', async () => {
+  const s = fakeCtx({ answer: 'no' })
+  assert.deepEqual(await neurons.chrome_search.run({ query: 'kochi weather' }, s), { say: "Okay, I won't." })
+  assert.deepEqual(s.asked.map((q) => q.action), ['chrome.navigate'])
+  assert.equal(s.opened.length, 0)
+
+  const r = fakeCtx({ answer: 'no' })
+  assert.deepEqual(await neurons.chrome_read_tab.run({}, r), { say: "Okay, I won't." })
+  assert.deepEqual(r.asked.map((q) => q.action), ['chrome.read'])
+  assert.equal(r.opened.length, 0)
+})
+
+test('chrome_search called by Claude after a page read is put to the taint rule', async () => {
+  const ctx = fakeCtx({ answer: 'no' })
+  ctx.taint = createTaint({ gate: ctx.gate })
+  ctx.taint.noteRead('mail.google.com')
+  const r = await neurons.chrome_search.run({ query: 'the last three subjects' }, ctx)
+  assert.deepEqual(r, { say: "Okay, I won't.", stop: true })
+  assert.equal(ctx.asked[0].prompt, 'You just read mail.google.com. Look up google.com now?')
+  assert.equal(ctx.opened.length, 0)
+})

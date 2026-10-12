@@ -721,8 +721,8 @@ const notDone = (reason) => ({
 // The taint rule
 // ---------------------------------------------------------------------------
 
-/** "evil.example/x" — a host with no scheme, which the extension still opens. */
-const HOSTLIKE = /^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?([/?#]|$)/i
+/** "mailto:", "javascript:", "C:" — but not "evil.example:8080", which is a port. */
+const SCHEME = /^[a-z][a-z0-9+.-]*:(?!\d)/i
 const LOCAL_HOST = /^(localhost|127(\.\d+){3}|\[::1\]|0\.0\.0\.0)$|\.localhost$/i
 
 /**
@@ -736,15 +736,22 @@ const LOCAL_HOST = /^(localhost|127(\.\d+){3}|\[::1\]|0\.0\.0\.0)$|\.localhost$/
 export function destination(raw) {
   // Browsers drop tabs and newlines from inside a URL, so "ht\ntps://" is https.
   const s = String(raw ?? '').replace(/[\t\n\r]/g, '').trim()
-  if (!s) return null
+  if (!s || /^(back|forward)$/i.test(s)) return null
+  // A path on this disk ("/home/me/shot.png"); "//host/x" is someone else's.
+  if (s.startsWith('/') && !s.startsWith('//')) return null
   let u
   try {
-    u = new URL(s.startsWith('//') ? `https:${s}` : HOSTLIKE.test(s) ? `https://${s}` : s)
+    // No scheme: the extension opens it over https, so judge it as that —
+    // "x_y.evil.example/?q=", "a@evil.example/", "evil。example" included.
+    u = new URL(s.startsWith('//') ? `https:${s}` : SCHEME.test(s) ? s : `https://${s}`)
   } catch {
-    return null
+    // Unreadable is not the same as staying here: ask rather than guess.
+    return 'an address I could not read'
   }
   if (u.protocol === 'http:' || u.protocol === 'https:') {
-    return LOCAL_HOST.test(u.hostname) ? null : u.host.replace(/^www\./, '')
+    const host = u.hostname.replace(/\.$/, '')
+    if (LOCAL_HOST.test(host)) return null
+    return `${host.replace(/^www\./, '')}${u.port ? `:${u.port}` : ''}`
   }
   // Stays here: files, inline data, and a drive letter parsed as a scheme (C:\…).
   if (/^(file|data|blob|about):$/.test(u.protocol) || /^[a-z]:$/i.test(u.protocol)) return null
@@ -771,26 +778,36 @@ function spokenList(names) {
  * all send a request somewhere, and the request carries whatever the model
  * wrote into it.
  *
- * So once a turn has read a page, the first time it reaches for a different
- * site it asks, stating two facts the bridge knows for itself — what was read
- * and where it is going — and the answer stands for the rest of the turn. A
- * yes is not asked again. A no is not asked again either: a page that talked
- * the model into one attempt can talk it into ten, and nobody should have to
- * say no ten times. A turn that has read nothing, the site it was already
- * reading, and anything on this machine never ask.
+ * So once the conversation has read a page, the first time a turn reaches for
+ * a different site it asks, stating two facts the bridge knows for itself —
+ * what was read and where it is going. A yes covers the sites it named, for
+ * the rest of the turn; a site it did not name asks again, so a yes to
+ * github.com is never a yes to whatever comes next. A no stands for the whole
+ * turn: a page that talked the model into one attempt can talk it into ten,
+ * and nobody should have to say no ten times. A conversation that has read
+ * nothing, the site it was already reading, and anything on this machine never
+ * ask.
  *
- * One per connection, emptied when a Claude turn ends (server.mjs).
+ * What was read is kept for the whole conversation, not the turn: the agent
+ * session remembers every turn, so an email read now can be carried out by a
+ * request three questions later. Only the answers are per turn.
+ *
+ * One per connection — the agent session's lifetime (server.mjs).
  *
  * @param {{ gate: { check: Function } }} deps
  */
 export function createTaint({ gate }) {
-  /** Hosts whose words came back to the model this turn. */
+  /** Hosts whose words have come back to the model in this conversation. */
   const read = new Set()
-  /** The turn's one answer, once given. */
-  let answered = null
+  /** ...and the ones read this turn, which is only how the question is worded. */
+  const readNow = new Set()
+  /** Sites a yes this turn has covered. */
+  const allowedTo = new Set()
+  /** A no this turn, which stands for every later attempt in it. */
+  let refused = null
   /** The question on screen, so parallel calls share it rather than queue another. */
   let asking = null
-  /** Bumped by reset, so an answer arriving after its turn ended is dropped. */
+  /** Bumped by endTurn, so an answer arriving after its turn ended is dropped. */
   let turn = 0
 
   /**
@@ -807,24 +824,31 @@ export function createTaint({ gate }) {
     const to = targets.filter((t) => [...read].some((r) => r !== t))
     if (!to.length) return { allowed: true }
     const from = [...read].filter((r) => to.some((t) => t !== r))
-    if (answered) {
+    const answered = (verdict, reason) => {
       audit({
         kind: 'gate',
         name: 'chrome.leave',
         args: { from, to },
-        decision: answered.allowed ? 'allow' : 'deny',
-        reason: 'answered-this-turn',
+        decision: verdict.allowed ? 'allow' : 'deny',
+        reason,
       })
-      return answered
+      return verdict
     }
+    if (refused) return answered(refused, 'refused-this-turn')
+    const fresh = to.filter((t) => !allowedTo.has(t))
+    if (!fresh.length) return answered({ allowed: true }, 'allowed-this-turn')
     const askedIn = turn
+    const opener = from.some((h) => readNow.has(h)) ? 'You just read' : 'Earlier you had me read'
     asking = gate.check('chrome.leave', {
-      prompt: `You just read ${spokenList(from)}. ${verb} ${spokenList(to)} now?`,
-      args: { from, to },
+      prompt: `${opener} ${spokenList(from)}. ${verb} ${spokenList(fresh)} now?`,
+      args: { from, to: fresh },
     })
     try {
       const verdict = await asking
-      if (askedIn === turn) answered = verdict
+      if (askedIn === turn) {
+        if (verdict.allowed) for (const t of fresh) allowedTo.add(t)
+        else refused = verdict
+      }
       return verdict
     } finally {
       asking = null
@@ -836,16 +860,49 @@ export function createTaint({ gate }) {
     /** The page's own words just came back from `host` (null: could not tell which). */
     noteRead(host) {
       read.add(host || 'a page')
+      readNow.add(host || 'a page')
     },
-    /** Which sites this turn has read. */
+    /** Which sites this conversation has read. */
     hosts: () => [...read],
-    /** A new turn: nothing read, nothing asked. */
-    reset() {
+    /** A turn is over: its answers lapse, what was read stays. */
+    endTurn() {
       turn++
-      read.clear()
-      answered = null
+      readNow.clear()
+      allowedTo.clear()
+      refused = null
     },
   }
+}
+
+/**
+ * A tabs_context reply cut down to what is safe to hand the model: each tab's
+ * id and origin. Titles, paths and queries are written by the page or carry
+ * private ids ("Inbox (3) - you@… - Gmail", a share link's token), and any
+ * other prose block in the reply restates them, so only the tab list is kept.
+ */
+function originsOnly(out) {
+  if (out?.isError || !Array.isArray(out?.content)) return out
+  for (const block of out.content) {
+    if (block?.type !== 'text') continue
+    let body
+    try {
+      body = JSON.parse(block.text)
+    } catch {
+      continue
+    }
+    if (!Array.isArray(body?.availableTabs)) continue
+    const tabs = body.availableTabs.map((t) => {
+      let origin = null
+      try {
+        origin = new URL(t?.url).origin
+      } catch {
+        /* not an address */
+      }
+      return { tabId: t?.tabId, origin: origin && origin !== 'null' ? origin : String(t?.url ?? '').split(/[/?#]/)[0] }
+    })
+    return { content: [{ type: 'text', text: JSON.stringify({ availableTabs: tabs }) }] }
+  }
+  return { content: [{ type: 'text', text: JSON.stringify({ availableTabs: [] }) }] }
 }
 
 /**
@@ -854,12 +911,21 @@ export function createTaint({ gate }) {
  */
 export function chromeServer({ allowWrites, gate = null, taint = null }) {
   /**
+   * Reading and going somewhere are 'free' by default, so this costs nothing —
+   * but the Permissions tab can set either to ask or never, and lockdown stops
+   * both, so each tool still puts its action to the gate.
+   */
+  const permitted = (action, prompt, args) => (gate ? gate.check(action, { prompt, args }) : { allowed: true })
+
+  /**
    * A tool whose result is the page's own words — its text, its tree, a
    * picture of it, what it logged. Which site they came from is noted for the
    * taint rule, read from the browser after the fact rather than taken from
    * the model.
    */
   const reading = (run) => async (args) => {
+    const may = await permitted('chrome.read', 'Read the page in your Chrome?')
+    if (!may.allowed) return notDone(may.reason)
     const out = await run(args)
     if (taint && !out?.isError) {
       const tab = await resolveTab(args?.tabId).catch(() => null)
@@ -876,6 +942,8 @@ export function chromeServer({ allowWrites, gate = null, taint = null }) {
         'the user whether the problem is the browser or the page.',
       {},
       async () => {
+        const may = await permitted('chrome.read', 'Look at your Chrome tabs?')
+        if (!may.allowed) return notDone(may.reason)
         const path = await findSocket()
         if (!path) {
           return {
@@ -889,7 +957,7 @@ export function chromeServer({ allowWrites, gate = null, taint = null }) {
             ],
           }
         }
-        return forward('tabs_context_mcp', { needsTab: false })({ createIfEmpty: false })
+        return originsOnly(await forward('tabs_context_mcp', { needsTab: false })({ createIfEmpty: false }))
       },
     ),
 
@@ -904,7 +972,11 @@ export function chromeServer({ allowWrites, gate = null, taint = null }) {
           .catch(undefined)
           .describe('Open a fresh tab if there is nothing to act on yet. Default false.'),
       },
-      forward('tabs_context_mcp', { needsTab: false }),
+      async (args) => {
+        const may = await permitted('chrome.read', 'Look at your Chrome tabs?')
+        if (!may.allowed) return notDone(may.reason)
+        return originsOnly(await forward('tabs_context_mcp', { needsTab: false })(args))
+      },
     ),
 
     tool(
@@ -923,6 +995,9 @@ export function chromeServer({ allowWrites, gate = null, taint = null }) {
           const leaving = await taint.leave(args.url, 'Go to')
           if (!leaving.allowed) return notDone(leaving.reason)
         }
+        const where = destination(args.url)
+        const may = await permitted('chrome.navigate', where ? `Go to ${where}?` : 'Go there in your Chrome?', { to: where })
+        if (!may.allowed) return notDone(may.reason)
         const out = await forward('navigate')(args)
         if (out.isError) return out
         // Do not hand back until the page is really there. Everything the model

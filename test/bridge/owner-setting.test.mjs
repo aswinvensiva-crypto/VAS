@@ -55,15 +55,35 @@ test('a config.json that does not parse is never saved over', async () => {
   assert.equal(readFileSync(join(dir, 'config.json'), 'utf8'), '{ "userName": "Asw')
 })
 
-test('an old requireOwner "off" moves to config.json once, and leaves permissions.json', async () => {
-  write('permissions.json', { version: 1, requireOwner: 'off', lockdown: true, tiers: { 'app.close': 'deny' } })
+test('an old requireOwner "all" moves to config.json once, and leaves permissions.json', async () => {
+  write('permissions.json', { version: 1, requireOwner: 'all', lockdown: true, tiers: { 'app.close': 'deny' } })
   write('config.json', { userName: 'Aswin' })
   await config.migrateOwnerRequirement()
-  assert.deepEqual(read('config.json'), { userName: 'Aswin', owner: { require: 'off' } })
+  assert.deepEqual(read('config.json'), { userName: 'Aswin', owner: { require: 'all' } })
   assert.deepEqual(read('permissions.json'), { version: 1, lockdown: true, tiers: { 'app.close': 'deny' } })
   // A second start finds nothing left to move.
   await config.migrateOwnerRequirement()
-  assert.equal((await config.loadConfig()).owner.require, 'off')
+  assert.equal((await config.loadConfig()).owner.require, 'all')
+})
+
+test('an old requireOwner "off" is dropped, not widened into "hear anyone"', async () => {
+  // It only ever relaxed whose yes counted; config's 'off' would also stop
+  // ignoring other voices altogether.
+  write('permissions.json', { requireOwner: 'off', lockdown: false })
+  write('config.json', { userName: 'Aswin' })
+  await config.migrateOwnerRequirement()
+  assert.deepEqual(read('config.json'), { userName: 'Aswin' })
+  assert.deepEqual(read('permissions.json'), { lockdown: false })
+  assert.equal((await config.loadConfig()).owner.require, 'all')
+})
+
+test('a config.json that fails its schema does not stop the bridge starting', async () => {
+  write('permissions.json', { requireOwner: 'all' })
+  write('config.json', { stt: { engine: 'whisper' } })
+  await config.migrateOwnerRequirement()
+  // Nothing was half-done: the old value waits for a config.json that loads.
+  assert.deepEqual(read('permissions.json'), { requireOwner: 'all' })
+  assert.deepEqual(read('config.json'), { stt: { engine: 'whisper' } })
 })
 
 test('the old default "actions" is dropped, not carried over', async () => {

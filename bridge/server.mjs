@@ -113,6 +113,8 @@ const SETTINGS = createSettings({
   corrections: CORRECTIONS,
   brain: BRAIN,
   speaker: () => SPEAKER,
+  // Loosening a safeguard from the drawer is put to the face that is open.
+  gate: () => FACE_GATE,
 })
 SETTINGS.watch()
 
@@ -122,6 +124,8 @@ SETTINGS.watch()
  * when it judges a spoken yes.
  */
 let SPEAKER = loadSpeaker()
+/** The gate of the face connected most recently, which can ask out loud; null when none is. */
+let FACE_GATE = null
 const HEARD = { verdict: 'unknown', at: 0, ownerAt: 0 }
 const voiceCheck = () => {
   if (!SPEAKER) return { verdict: 'unenrolled', ownerRecently: false }
@@ -1230,12 +1234,15 @@ wss.on('connection', (socket) => {
       }
     },
   })
+  FACE_GATE = gate
 
   /**
-   * Which sites the Claude turn in flight has read in the user's browser (the
-   * taint rule, chrome.mjs). Shared by the tools that can send an address off
-   * the machine, and emptied when a turn's `result` arrives — the one point
-   * the next turn is known not to have begun, since the agent answers in order.
+   * Which sites this conversation has read in the user's browser (the taint
+   * rule, chrome.mjs). Shared by the tools that can send an address off the
+   * machine. It lives as long as the agent session — this connection — because
+   * that is how long the model remembers what it read; only its answers lapse
+   * when a turn's `result` arrives, the one point the next turn is known not to
+   * have begun, since the agent answers in order.
    */
   const taint = createTaint({ gate })
 
@@ -1564,7 +1571,7 @@ wss.on('connection', (socket) => {
               turnIds.shift()
               finishTurn?.()
               finishTurn = null
-              taint.reset()
+              taint.endTurn()
               // One turn's tool ids are never referred to again, and these
               // otherwise grow for as long as the socket is open.
               seenTools.clear()
@@ -1625,7 +1632,7 @@ wss.on('connection', (socket) => {
       const id = typeof msg.id === 'string' ? msg.id : null
       // The words as heard, and the segments they were heard in (heard.mjs).
       const heard = heardOf(msg)
-      if (fromOtherVoice(heard, { enrolled: Boolean(SPEAKER) })) {
+      if (fromOtherVoice(heard, { enrolled: Boolean(SPEAKER), require: CONFIG.owner.require })) {
         // Someone else's voice, start to finish. Not a question for JARVIS: an
         // empty answer sends the face back to listening without a word.
         send({ type: 'done', text: '', ask: id, ignored: 'other-voice' })
@@ -1664,6 +1671,7 @@ wss.on('connection', (socket) => {
   })
 
   socket.on('close', () => {
+    if (FACE_GATE === gate) FACE_GATE = null
     gate.abortAll()
     localTurns.abort()
     console.log('[jarvis] client disconnected')

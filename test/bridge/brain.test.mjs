@@ -163,3 +163,17 @@ test('hot reload: an edit to brain.yml is live without a restart, a bad one is n
   await eventually(() => errors.length > 0, 'the broken edit to be reported')
   assert.equal(said('work mode').name, 'say', 'the last good brain is still in charge')
 })
+
+test('reload says whether the file loaded, and problem() says why one would not', () => {
+  writeUser(GOOD)
+  open()
+  assert.equal(brain.reload(), true)
+  assert.equal(brain.problem(GOOD), null)
+  const typo = 'synapses:\n  - name: odd\n    signals:\n      - order: "odd one"\n    neurons:\n      - launch_rockets: {}\n'
+  assert.match(brain.problem(typo), /unknown neuron "launch_rockets"/)
+  assert.match(brain.problem('synapses: [ {'), /./)
+  assert.equal(brain.userSynapses().length, 2, 'checking a text changes nothing')
+  writeUser(typo)
+  assert.equal(brain.reload(), false)
+  assert.equal(brain.userSynapses().length, 2, 'the last good one stays')
+})

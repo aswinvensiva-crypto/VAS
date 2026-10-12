@@ -165,11 +165,16 @@ export async function updateConfig(patch) {
  * this one, read by both. An old permissions.json value is carried over once
  * and then dropped from that file.
  *
- * Only 'off' and 'all' are carried over. 'actions' was that file's default,
- * written into every permissions.json the first time anything saved it (a
- * lockdown, say), so finding it says nothing about what the user chose — and
- * it judged a yes exactly as the unified default does. A value already set
- * here wins; the old one is just removed.
+ * Only 'all' is carried over. 'actions' was that file's default, written into
+ * every permissions.json the first time anything saved it (a lockdown, say),
+ * so finding it says nothing about what the user chose — and it judged a yes
+ * exactly as the unified default does. 'off' there only relaxed whose yes
+ * counts; here it would also stop ignoring everyone else's voice, which nobody
+ * chose, so it is left at the default with a note in the log instead. A value
+ * already set here wins; the old one is just removed.
+ *
+ * Never fatal: this runs before the bridge starts, and a config.json that
+ * fails its schema is otherwise only a warning (loadConfig uses defaults).
  */
 export async function migrateOwnerRequirement() {
   let permissions
@@ -184,10 +189,19 @@ export async function migrateOwnerRequirement() {
   }
   if (!isPlain(permissions) || !Object.hasOwn(permissions, 'requireOwner')) return
   const legacy = permissions.requireOwner
-  if ((legacy === 'off' || legacy === 'all') && config.owner?.require === undefined) {
-    await updateConfig({ owner: { require: legacy } })
-    console.log(`[jarvis] moved requireOwner "${legacy}" from permissions.json to config.json (owner.require)`)
+  try {
+    if (legacy === 'all' && config.owner?.require === undefined) {
+      await updateConfig({ owner: { require: legacy } })
+      console.log(`[jarvis] moved requireOwner "${legacy}" from permissions.json to config.json (owner.require)`)
+    } else if (legacy === 'off' && config.owner?.require === undefined) {
+      console.log(
+        '[jarvis] permissions.json had requireOwner "off"; owner.require stays "all". ' +
+          'Choose who can talk and approve in Settings > General.',
+      )
+    }
+    delete permissions.requireOwner
+    await writeJsonAtomic('permissions.json', permissions)
+  } catch (err) {
+    console.warn(`[jarvis] owner setting not migrated: ${err.message}`)
   }
-  delete permissions.requireOwner
-  await writeJsonAtomic('permissions.json', permissions)
 }

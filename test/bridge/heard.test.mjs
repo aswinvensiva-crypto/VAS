@@ -195,3 +195,13 @@ test('a local turn remembers the raw words and hands them to neurons as ctx.raw'
     brain.close()
   }
 })
+
+test('another voice is ignored only under "only my voice"; "anyone can talk" and "off" answer it', () => {
+  const tv = { utts: ['tv1', 'tv2'] }
+  const log = []
+  const audit = (e) => log.push(e)
+  assert.equal(heard.fromOtherVoice(tv, { enrolled: true, require: 'all', store: SEGMENTS, audit }), true)
+  assert.equal(heard.fromOtherVoice(tv, { enrolled: true, require: 'actions', store: SEGMENTS, audit }), false)
+  assert.equal(heard.fromOtherVoice(tv, { enrolled: true, require: 'off', store: SEGMENTS, audit }), false)
+  assert.equal(log.length, 1, 'only the one that was ignored is audited')
+})

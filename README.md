@@ -97,15 +97,25 @@ VAS's own tools, which ask for themselves.
 
 A few rules sit on top of the tiers:
 
-- **After JARVIS reads a page, leaving that site asks once.** Following a link,
-  looking up a URL, or showing a remote page or picture from a different site
-  asks "You just read mail.google.com. Go to example.com now?" once per answer.
-  A page can't quietly send what JARVIS read somewhere else.
+- **After JARVIS reads a page, going to a different site asks first.** Following
+  a link, searching, looking up a URL, showing a remote page or picture, or
+  saving a routine that opens a site asks "You just read mail.google.com. Go to
+  example.com now?". A yes covers the sites it named for that answer; a no
+  covers the whole answer. What was read counts for the rest of the
+  conversation, because Claude remembers it. A page can't quietly send what
+  JARVIS read somewhere else.
+- **Reading Chrome and opening sites follow their tiers too.** Set them to ask
+  or never in Settings → Permissions, and lockdown stops them like everything
+  else. Listing tabs gives Claude only their sites, never their titles.
 - **A click or typing is tied to the page you approved.** If the tab navigates
   while JARVIS is asking, nothing happens.
 - **The camera asks first while VAS is hidden.**
 - **Stopping JARVIS withdraws every pending question,** including any queued
   behind the one on screen.
+- **Settings can't be the way around a safeguard.** While locked down, or with
+  "Clicking Confirm counts as a yes" off, loosening anything in the drawer
+  (lifting lockdown, a tier toward "just do it", who can talk) asks first, out
+  loud. With clicks off, only a spoken yes approves it.
 
 ## Where things live
 
