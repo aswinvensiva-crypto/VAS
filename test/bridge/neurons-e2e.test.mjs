@@ -140,6 +140,17 @@ test('a routine taught by voice is saved and then runs locally', { skip: !window
   assert.match(listed.said, /focus time/)
 })
 
+test('"forget the routine …" asks, then the routine is gone', { skip: !windows && 'Windows Start menu' }, async () => {
+  answers.push('yes') // forget it
+  const r = await ask('forget the routine focus time')
+  assert.equal(r.claude, false)
+  assert.match(prompts.at(-1), /^Forget the routine "focus time"\?$/)
+  assert.match(r.said, /Forgotten/)
+  assert.doesNotMatch(readFileSync(join(bridge.dataDir, 'brain.yml'), 'utf8'), /focus time/)
+  const after = await ask('focus time')
+  assert.equal(after.claude, true, 'with the routine gone, the words are Claude\'s again')
+})
+
 test('an interrupt withdraws an open question', { skip: !windows && 'Windows Start menu' }, async () => {
   holdNext = true
   const cancelled = new Promise((resolve) => {
