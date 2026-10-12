@@ -8,6 +8,8 @@ import {
 } from '../config'
 import * as kokoro from './kokoro'
 import { caps } from './capabilities'
+import { chooseVoice, rankVoices } from './voiceRank'
+import { loadSettings, saveGeneral, settingsAvailable } from './settings'
 
 /**
  * Speech output.
@@ -162,67 +164,19 @@ const MAX_UNSPOKEN = 220
 // Voice selection
 // ---------------------------------------------------------------------------
 
-const VOICE_PREF_KEY = 'jarvis.voice'
+/** Where the voice picker used to keep its choice, per browser profile. Read
+ *  once, to move that choice into the settings, then removed. */
+const LEGACY_VOICE_KEY = 'jarvis.voice'
 
 /**
- * Rank installed voices by how close they are to the character: a British
- * male, low and level, not a novelty voice.
- *
- * The big win on macOS is the Enhanced/Premium variant of Daniel. The stock
- * "Daniel" is a compact voice from a decade ago and sounds it; the Enhanced
- * download is free (System Settings → Accessibility → Spoken Content → System
- * Voice → Manage Voices) and once installed it appears here automatically.
+ * The voice named in the settings (config.json tts.voice), or null for the
+ * best-ranked one. Ranking and choosing live in voiceRank.ts.
  */
-function score(v: SpeechSynthesisVoice): number {
-  const n = v.name.toLowerCase()
-  let s = 0
-
-  // The macOS British male, and the closest thing to the character available
-  // without leaving the machine.
-  if (n.startsWith('daniel')) s += 100
-  else if (n.includes('google uk english male')) s += 85
-  else if (/\b(oliver|arthur|jamie|malcolm)\b/.test(n)) s += 80
-  // Newer macOS en-GB male voices — casual, but serviceable.
-  else if (/\b(reed|rocko|eddy)\b/.test(n)) s += 40
-  // Windows. The OneCore voices are what Chrome, Edge and Electron expose on
-  // Windows 11; the en-GB male is the nearest to the character, the US and
-  // en-IN males are clear and well-paced.
-  else if (/^microsoft (ryan|thomas)\b/.test(n)) s += 85
-  else if (/^microsoft george\b/.test(n)) s += 80
-  else if (/^microsoft (mark|david|guy|ravi|prabhat)\b/.test(n)) s += 60
-
-  // Higher-quality variants of whatever matched above.
-  if (n.includes('premium')) s += 30
-  else if (n.includes('enhanced') || n.includes('(natural)')) s += 20
-
-  if (/en[-_]gb/i.test(v.lang)) s += 25
-  else if (/^en/i.test(v.lang)) s += 5
-
-  // Voices that clearly aren't a butler.
-  if (/grandma|grandpa|bubbles|jester|bells|boing|whisper|zarvox|superstar|trinoids|wobble|bahh|organ|cellos|bad news|good news/.test(n)) {
-    s -= 200
-  }
-  // Female-presenting names across the English sets.
-  if (/\b(flo|sandy|shelley|kate|serena|fiona|moira|karen|tessa|samantha|zoe|allison|ava|susan)\b/.test(n)) {
-    s -= 60
-  }
-
-  return s
-}
-
-/** Only voices that scored on a name match, not merely on being English —
- *  otherwise the picker cycles through a dozen US novelty voices. */
-const USABLE = 40
+let preferred: string | null = null
 
 /** Best-first list of usable voices — also what the voice picker cycles. */
 export function candidateVoices(): SpeechSynthesisVoice[] {
-  return speechSynthesis
-    .getVoices()
-    .filter((v) => /^en/i.test(v.lang))
-    .map((v) => ({ v, s: score(v) }))
-    .filter((x) => x.s >= USABLE)
-    .sort((a, b) => b.s - a.s)
-    .map((x) => x.v)
+  return rankVoices(speechSynthesis.getVoices())
 }
 
 let cachedVoice: SpeechSynthesisVoice | null | undefined
@@ -231,19 +185,41 @@ function pickVoice(): SpeechSynthesisVoice | null {
   if (cachedVoice !== undefined) return cachedVoice
   const all = speechSynthesis.getVoices()
   if (!all.length) return null // not loaded yet — try again next utterance
-
-  // Honour an explicit choice made with the voice picker. A saved name that no
-  // longer resolves is dropped rather than left to resurrect itself silently
-  // if that voice is ever reinstalled.
-  const saved = localStorage.getItem(VOICE_PREF_KEY)
-  if (saved) {
-    const hit = all.find((v) => v.name === saved)
-    if (hit) return (cachedVoice = hit)
-    localStorage.removeItem(VOICE_PREF_KEY)
-  }
-
-  cachedVoice = candidateVoices()[0] ?? all.find((v) => /^en/i.test(v.lang)) ?? null
+  cachedVoice = chooseVoice(all, preferred)
   return cachedVoice
+}
+
+/** Use this voice from the next sentence on (null: the best-ranked one). */
+export function setPreferredVoice(name: string | null): void {
+  preferred = name
+  cachedVoice = undefined
+}
+
+/**
+ * At boot: the preferred voice from the settings.
+ *
+ * The voice picker used to remember its choice in this browser profile's
+ * localStorage, which a reinstall or a second profile lost. That choice is
+ * moved into the settings once — unless the settings already name a voice,
+ * which wins — and the old key is removed. If the bridge cannot be reached,
+ * the key stays where it is for the next boot to try again.
+ */
+export async function syncVoicePreference(): Promise<void> {
+  if (!settingsAvailable) return
+  let legacy: string | null = null
+  try {
+    legacy = localStorage.getItem(LEGACY_VOICE_KEY)
+  } catch {
+    /* storage unavailable: nothing to move */
+  }
+  try {
+    let settings = await loadSettings(3000)
+    if (!settings.general.tts.voice && legacy) settings = await saveGeneral({ tts: { voice: legacy } })
+    setPreferredVoice(settings.general.tts.voice)
+    if (legacy) localStorage.removeItem(LEGACY_VOICE_KEY)
+  } catch (err) {
+    console.warn('[jarvis] voice preference not loaded:', err)
+  }
 }
 
 /** What the HUD should show. Reports the engine actually in use rather than
@@ -258,15 +234,19 @@ export function currentVoiceName(): string {
 }
 
 /** Step to the next candidate — lets you audition voices on your own machine
- *  rather than trusting a ranking to be right about how they sound. */
+ *  rather than trusting a ranking to be right about how they sound. The pick
+ *  is saved as the preferred voice, the same setting the Settings drawer
+ *  changes. */
 export function cycleVoice(): string {
   const list = candidateVoices()
   if (!list.length) return 'default'
   const now = pickVoice()
   const i = list.findIndex((v) => v.name === now?.name)
   const next = list[(i + 1) % list.length]
-  localStorage.setItem(VOICE_PREF_KEY, next.name)
-  cachedVoice = next
+  setPreferredVoice(next.name)
+  if (settingsAvailable) {
+    saveGeneral({ tts: { voice: next.name } }).catch((err) => console.warn('[jarvis] voice choice not saved:', err))
+  }
   return next.name
 }
 

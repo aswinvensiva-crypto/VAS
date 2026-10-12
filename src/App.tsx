@@ -8,7 +8,7 @@ import { Enroll } from './ui/Enroll'
 import { ModelsBanner } from './ui/ModelsBanner'
 import { useStore } from './store'
 import { startVoice, type Voice, type VoiceMode } from './lib/voice'
-import { createSpeaker, cycleVoice, currentVoiceName, speakingNow } from './lib/tts'
+import { createSpeaker, cycleVoice, currentVoiceName, speakingNow, syncVoicePreference } from './lib/tts'
 import * as sfx from './lib/sfx'
 import * as music from './lib/music'
 import * as hands from './lib/hands'
@@ -605,6 +605,8 @@ export default function App() {
     await new Promise((r) => setTimeout(r, quiet ? 0 : 9200)) // boot sequence
     await warming
     store.getState().setConnected(connectedLabels())
+    // The preferred voice is a setting (config.json), read before the first word.
+    await syncVoicePreference()
     store.getState().setVoice(currentVoiceName())
 
     // The analyser is what makes the reactor pulse with your voice. It needs a
