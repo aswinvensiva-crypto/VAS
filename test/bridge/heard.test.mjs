@@ -91,18 +91,23 @@ test('a confirm reply carries the looked-up verdict, never the face\'s claim', (
   assert.equal(kept.id, 'q1')
 })
 
-test('the utterance store forgets after two minutes', () => {
+test('the utterance store keeps what this module relies on, for about two minutes', () => {
+  // The store's own tests (utterances.test.mjs) pin the exact expiry; this only
+  // checks the contract heard.mjs reads: get(id) -> { owner, raw, text } | null.
   let now = 1_000
   const store = utterancesMod.createUtterances({ now: () => now })
-  const id = store.put({ owner: { verdict: 'owner' }, raw: 'open spot if i', text: 'open spotify' })
+  const id = store.put({ owner: 'owner', raw: 'open spot if i', text: 'open spotify' })
   assert.equal(typeof id, 'string')
-  assert.equal(store.get(id).raw, 'open spot if i')
+  const kept = store.get(id)
+  assert.equal(kept.raw, 'open spot if i')
+  assert.equal(kept.text, 'open spotify')
+  assert.equal(kept.owner, 'owner')
   assert.equal(store.get('nope'), null)
   assert.equal(store.get(undefined), null)
-  now += 120_000
-  assert.equal(store.get(id).text, 'open spotify')
-  now += 1
-  assert.equal(store.get(id), null)
+  now += 110_000
+  assert.equal(store.get(id)?.text, 'open spotify', 'still there before two minutes are up')
+  now += 20_000
+  assert.equal(store.get(id), null, 'gone once two minutes have passed')
 })
 
 /** A fake face for the gate: answers from a script, recording what it was asked. */

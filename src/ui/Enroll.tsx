@@ -13,17 +13,55 @@ import { startVad, type Vad } from '../lib/vad'
  * embedding there; only the averaged voiceprint is kept. Afterwards a live
  * test shows how each new thing you say scores, so you can see it works for
  * your voice — or start again in a quieter room.
+ *
+ * The lines come from the bridge (GET /voice/enroll), which also says how
+ * many short (a word or two) and long recordings it needs: the voice check is
+ * calibrated separately for each length, and a confirmation is usually one
+ * word. If the lines run out before both counts are met, more of the missing
+ * kind are added rather than failing at the end.
  */
-const PHRASES = [
-  'Hey Jarvis, open Chrome for me.',
-  'Hey Jarvis, what is the weather like today?',
-  'Yes, confirm it.',
-  'No, cancel that.',
-  'The quick brown fox jumps over the lazy dog while the sun goes down.',
-  'I usually start my day with a coffee and a look at my calendar.',
-  'Hey Jarvis, play some music.',
-  'Could you remind me what I have planned for tomorrow afternoon?',
-]
+type Plan = { prompts: string[]; need: { short: number; long: number } }
+
+/** Used only if the bridge cannot be asked; mirrors its list. */
+const FALLBACK: Plan = {
+  prompts: [
+    'Hey Jarvis, open Chrome for me.',
+    'Yes.',
+    'The quick brown fox jumps over the lazy dog while the sun goes down.',
+    'No.',
+    'Hey Jarvis.',
+    'Go ahead.',
+    'Could you remind me what I have planned for tomorrow afternoon?',
+    'Stop.',
+    'Hey Jarvis, what is the weather like today?',
+    'Cancel that.',
+    'Confirm.',
+  ],
+  need: { short: 5, long: 2 },
+}
+
+const isShortLine = (line: string) => line.trim().split(/\s+/).length <= 2
+
+/** Another line of the kind still missing, taken in turn from the plan's own. */
+function extraLine(plan: Plan, have: { short: number; long: number }, n: number): string | null {
+  const kind = have.short < plan.need.short ? 'short' : have.long < plan.need.long ? 'long' : null
+  if (!kind) return null
+  const pool = plan.prompts.filter((l) => isShortLine(l) === (kind === 'short'))
+  return pool.length ? pool[n % pool.length] : null
+}
+
+async function loadPlan(): Promise<Plan> {
+  try {
+    const res = await fetch(`${BRIDGE_HTTP_URL}/voice/enroll`)
+    const body = (await res.json()) as Partial<Plan>
+    if (Array.isArray(body.prompts) && body.prompts.length && body.need) {
+      return { prompts: body.prompts, need: body.need }
+    }
+  } catch {
+    /* fall back to the built-in lines */
+  }
+  return FALLBACK
+}
 
 type Stage = 'record' | 'saving' | 'test' | 'error'
 
@@ -48,6 +86,11 @@ export function Enroll() {
   const vad = useRef<Vad | null>(null)
   const busy = useRef(false)
   const stepRef = useRef(0)
+  // The lines being read: the plan's, plus any added to reach the counts.
+  const [lines, setLines] = useState<string[]>(FALLBACK.prompts)
+  const linesRef = useRef<string[]>(FALLBACK.prompts)
+  const plan = useRef<Plan>(FALLBACK)
+  const have = useRef({ short: 0, long: 0 })
 
   useEffect(() => {
     if (!enrolling) return
@@ -57,13 +100,33 @@ export function Enroll() {
     setNote('Read the line out loud, at your normal volume.')
     setResult(null)
     session.current = null
+    have.current = { short: 0, long: 0 }
     let stopped = false
+    const showLines = (next: string[]) => {
+      linesRef.current = next
+      setLines(next)
+    }
+    showLines(FALLBACK.prompts)
+    void loadPlan().then((p) => {
+      if (stopped) return
+      plan.current = p
+      // Only swap the lines if nothing has been recorded against the old ones.
+      if (stepRef.current === 0) showLines(p.prompts)
+    })
+
+    /** After the last line: add one of the missing kind, or say none is missing. */
+    const extendIfShort = (): boolean => {
+      const line = extraLine(plan.current, have.current, stepRef.current)
+      if (!line) return false
+      showLines([...linesRef.current, line])
+      return true
+    }
 
     const onClip = async (blob: Blob) => {
       if (busy.current || stopped) return
       busy.current = true
       try {
-        if (stepRef.current < PHRASES.length) {
+        if (stepRef.current < linesRef.current.length) {
           const q = session.current ? `?session=${session.current}` : ''
           const r = await post(`/voice/enroll${q}`, blob)
           if (!r.ok) {
@@ -71,15 +134,27 @@ export function Enroll() {
             return
           }
           session.current = r.session
+          if (typeof r.short === 'number' && typeof r.long === 'number') have.current = { short: r.short, long: r.long }
           const next = stepRef.current + 1
           stepRef.current = next
           setStep(next)
-          if (next < PHRASES.length) {
+          if (next < linesRef.current.length || extendIfShort()) {
             setNote('Got it.')
             return
           }
           setStage('saving')
           const done = await post(`/voice/enroll/finish?session=${session.current}`)
+          if (!done.ok && done.need && (done.need.short > 0 || done.need.long > 0)) {
+            // The bridge counted differently (a clip near two seconds): keep going.
+            have.current = {
+              short: Math.max(0, plan.current.need.short - done.need.short),
+              long: Math.max(0, plan.current.need.long - done.need.long),
+            }
+            extendIfShort()
+            setStage('record')
+            setNote(done.reason ?? 'A few more, please.')
+            return
+          }
           if (!done.ok) {
             setStage('error')
             setNote(done.reason ?? 'Saving your voice failed.')
@@ -128,9 +203,9 @@ export function Enroll() {
       {stage === 'record' && (
         <>
           <div className="enroll-count">
-            {step + 1} / {PHRASES.length}
+            {step + 1} / {lines.length}
           </div>
-          <div className="enroll-phrase">“{PHRASES[step]}”</div>
+          <div className="enroll-phrase">“{lines[step]}”</div>
         </>
       )}
       {stage === 'saving' && <div className="enroll-phrase">Saving your voice…</div>}

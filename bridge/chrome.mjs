@@ -1223,7 +1223,7 @@ export const chromeOps = {
   /** The address of the tab the user is looking at (front Chrome window). */
   async currentUrl() {
     const script = fileURLToPath(new URL('./os/chrome-url.ps1', import.meta.url))
-    const root = process.env.SystemRoot || 'C:\Windows'
+    const root = process.env.SystemRoot || process.env.windir || 'C:\\Windows'
     try {
       const { stdout } = await execFileP(
         join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
