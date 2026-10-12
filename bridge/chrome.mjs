@@ -808,7 +808,13 @@ export function createTaint({ gate }) {
     if (!to.length) return { allowed: true }
     const from = [...read].filter((r) => to.some((t) => t !== r))
     if (answered) {
-      audit({ kind: 'gate', name: 'chrome.leave', args: { from, to }, decision: answered.allowed ? 'allow' : 'deny', reason: 'answered-this-turn' })
+      audit({
+        kind: 'gate',
+        name: 'chrome.leave',
+        args: { from, to },
+        decision: answered.allowed ? 'allow' : 'deny',
+        reason: 'answered-this-turn',
+      })
       return answered
     }
     const askedIn = turn
