@@ -12,13 +12,18 @@ import { match, normalize, rankMatches } from './matcher.mjs'
  * Synchronous on purpose: deciding takes microseconds, and keeping it
  * synchronous keeps questions answered in the order they were asked.
  *
+ * `routine` is for teaching: a step of a routine may also use the synapses
+ * marked routine-only ("say {{message}}"), which no spoken order reaches.
+ *
+ * @param {{ routine?: boolean }} [options]
  * @returns {{ synapse: object, params: Record<string, string>, coverage: number } | null}
  */
-export function route(text, brain) {
+export function route(text, brain, { routine = false } = {}) {
   const input = normalize(text)
   if (!input.norm.length) return null
   const candidates = []
   for (const synapse of brain.synapses()) {
+    if (synapse.routineOnly && !routine) continue
     for (const signal of synapse.signals) {
       const m = match(signal.template, input, { type: signal.type, excluded: signal.excluded })
       if (m) {

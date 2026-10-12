@@ -143,6 +143,40 @@ export function processNamesFor(app) {
 }
 
 /**
+ * Is any of these processes running?
+ *
+ * tasklist, by absolute path and with fixed arguments, lists every process,
+ * and the names are compared here — so nothing from apps.json, let alone from
+ * speech, ever reaches a command line.
+ *
+ * @param {string[]} names  process names, from processNamesFor or apps.json
+ * @param {{ execFile?: Function, systemRoot?: string }} [deps]
+ * @returns {Promise<boolean | null>} null when Windows could not be asked:
+ *   "don't know", which a caller must never report as a failed launch.
+ */
+export async function isRunning(names, { execFile = execFileP, systemRoot = defaultSystemRoot() } = {}) {
+  const wanted = new Set((Array.isArray(names) ? names : [names]).map((n) => String(n).toLowerCase()))
+  if (!wanted.size) return null
+  let stdout
+  try {
+    ;({ stdout } = await execFile(
+      win32.join(systemRoot, 'System32', 'tasklist.exe'),
+      ['/FO', 'CSV', '/NH'],
+      { windowsHide: true, timeout: 10000, maxBuffer: 8 << 20 },
+    ))
+  } catch {
+    return null
+  }
+  // One process per line, image name first: "Code - Insiders.exe","1234",…
+  const images = String(stdout ?? '')
+    .split(/\r?\n/)
+    .map((line) => /^"([^"]+)"/.exec(line)?.[1])
+    .filter(Boolean)
+  if (!images.length) return null
+  return images.some((image) => wanted.has(image.replace(/\.exe$/i, '').toLowerCase()))
+}
+
+/**
  * Ask an app's windows to close, the way clicking X does: unsaved work gets
  * its "save changes?" prompt, and nothing is ever killed.
  *

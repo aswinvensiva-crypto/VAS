@@ -49,8 +49,11 @@ const isNumberGlue = (ch, i, s) =>
  * The symbol words come first because they are the ones people say aloud:
  * a recogniser that hears "notepad plus plus" may write "Notepad++", and the
  * template author may have written either.
+ *
+ * Exported for teaching, which has to line these words up with the text as
+ * it was said to find where the speaker put a comma.
  */
-function tokenize(text) {
+export function tokenize(text) {
   const clean = String(text ?? '')
     .normalize('NFKC')
     .replace(/[‘’ʼ]/g, '\'')
@@ -78,6 +81,13 @@ const PREFIXES = aliases.prefixes.map(words).filter((p) => p.length)
  */
 const WAKE = [...PREFIXES.flatMap((p) => NAMES.map((n) => [...p, ...n])), ...NAMES]
   .sort((a, b) => b.length - a.length)
+
+/**
+ * The wake phrase's parts, as words, for anything that has to keep clear of
+ * them: a routine taught with "jarvis" or "hey" in its trigger would be cut
+ * short by the trimming below, or heard by the face as a fresh wake-up.
+ */
+export const WAKE_PARTS = [...NAMES, ...PREFIXES]
 
 /**
  * Politeness around a request. Cut only at the edges, where it never changes
