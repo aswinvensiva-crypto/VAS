@@ -39,7 +39,8 @@ function fakeEngine(embedding) {
   }
 }
 const speaker = { centroid: unit(0), thresholds: { short: 0.5, long: 0.6 } }
-const samples = new Float32Array(16000 * 3).fill(0.1)
+/** Something shaped like speech (a flat level would be refused as silence). */
+const samples = Float32Array.from({ length: 16000 * 3 }, (_, i) => Math.sin(i / 3) * 0.3 * Math.abs(Math.sin((Math.PI * 4 * i) / 16000)))
 const config = (require) => ({ stt: { engine: 'local' }, owner: { require } })
 
 test('with "only my voice", someone else is dropped before transcription', async () => {
@@ -63,7 +64,7 @@ test('the owner gets through; with "actions" others are heard but marked', async
   assert.equal(mine.wake.keyword, 'HEY_JARVIS')
   assert.equal(mine.owner.verdict, 'owner')
   const theirs = await handleSegment({ samples, mode: 'command', engine: fakeEngine(unit(80)), config: config('actions'), speaker })
-  assert.equal(theirs.text, 'Hey Jarvis, open Spotify.')
+  assert.equal(theirs.text, 'open Spotify.') // the leading wake phrase is cut off in command mode too
   assert.equal(theirs.owner.verdict, 'other')
 })
 

@@ -29,6 +29,21 @@ export function stripWake(text) {
   return t
 }
 
+/**
+ * The name alone, in a known spelling, at the start — for audio already cut
+ * after the wake phrase, where a leftover "Jarvis" is a near miss of the cut
+ * but "hey <word>" is just as likely the command itself.
+ */
+export function stripName(text) {
+  return String(text ?? '').trim().replace(LEADING_NAME, '').trim()
+}
+
+/** Does this transcript open with the wake phrase ("Hey Jarvis", any known spelling)? */
+const WAKE_PHRASE = new RegExp(`^\\s*${PREFIX}[\\s,]+${NAMES}\\b`, 'i')
+export function opensWithWake(text) {
+  return WAKE_PHRASE.test(String(text ?? ''))
+}
+
 /** Strip the non-speech annotations Whisper sometimes emits. */
 export function cleanTranscript(text) {
   return String(text ?? '')
@@ -51,14 +66,54 @@ const PHANTOMS = new Set([
 /** Level below which a phantom phrase is assumed invented rather than said. */
 const QUIET_RMS = 0.02
 
+/** 20 ms at 16 kHz: the unit speech is counted in. */
+const FRAME = 320
+/** A frame this many times its segment's noise floor (6 dB up) counts as sound. */
+const ABOVE_FLOOR = 2
+/** ...and never below about -54 dBFS, so digital silence is not "above" a floor of zero. */
+const MIN_FRAME_RMS = 0.002
+/**
+ * Below this share of sounding frames a segment is mostly silence. The face's
+ * own voice detector pads every segment with 300 ms before and 650 ms after,
+ * so a real one-word "yes" still measures about 0.25; a knock or a click that
+ * tripped the detector measures 0.02-0.1.
+ */
+const MIN_SPEECH_RATIO = 0.1
+
+/**
+ * Share of the segment's 20 ms frames that rise clearly above its own noise
+ * floor (the quietest tenth of its frames). Whisper will read a sentence into
+ * a second of near-silence with one click in it — and not only the sentences
+ * on the phantom list — so how much of the audio is sound at all is the
+ * check that does not depend on what it invented.
+ * @param {Float32Array} samples 16 kHz mono
+ */
+export function speechRatio(samples) {
+  const n = Math.floor(samples.length / FRAME)
+  if (!n) return 0
+  const levels = new Float64Array(n)
+  for (let f = 0; f < n; f++) {
+    let sum = 0
+    for (let i = f * FRAME; i < (f + 1) * FRAME; i++) sum += samples[i] * samples[i]
+    levels[f] = Math.sqrt(sum / FRAME)
+  }
+  const floor = Float64Array.from(levels).sort()[Math.floor((n - 1) * 0.1)]
+  const bar = Math.max(floor * ABOVE_FLOOR, MIN_FRAME_RMS)
+  let sounding = 0
+  for (const level of levels) if (level > bar) sounding++
+  return sounding / n
+}
+
 /**
  * Is this transcript something nobody actually said?
  * @param {string} text
- * @param {{ seconds: number, rms: number }} audio
+ * @param {{ seconds: number, rms: number, speech?: number }} audio
+ *   `speech` is speechRatio() of the audio that was transcribed, when known.
  */
-export function isPhantom(text, { seconds, rms }) {
+export function isPhantom(text, { seconds, rms, speech }) {
   const t = text.toLowerCase().trim()
   if (!t || /^[\s\p{P}]*$/u.test(t)) return true
   if (seconds < 0.4) return true
+  if (speech !== undefined && speech < MIN_SPEECH_RATIO) return true
   return PHANTOMS.has(t) && rms < QUIET_RMS
 }

@@ -23,7 +23,12 @@ function engine(key, build) {
 }
 
 const ops = {
-  /** First keyword spotted in the clip, with where it ends, or null. */
+  /**
+   * First keyword spotted in the clip, or null. `start` and `end` are the
+   * times (seconds into the clip) the spotter stamped on its first and last
+   * phone — the last one lands at the end of the word, which is where the
+   * command after "Hey Jarvis" begins.
+   */
   kws(samples, { modelDir, keywordsFile }) {
     const kws = engine(`kws|${modelDir}|${keywordsFile}`, () => {
       // A new spotter is the only way to pick up an edited keywords file.
@@ -52,8 +57,10 @@ const ops = {
       kws.decode(stream)
       const r = kws.getResult(stream)
       if (r.keyword) {
+        // Phone times count from the stream's (re)start, which is the clip's start here.
+        const at = r.start_time ?? 0
         const ts = Array.isArray(r.timestamps) ? r.timestamps : []
-        return { keyword: r.keyword, start: r.start_time ?? 0, end: ts.length ? ts[ts.length - 1] : null }
+        return { keyword: r.keyword, start: ts.length ? at + ts[0] : null, end: ts.length ? at + ts[ts.length - 1] : null }
       }
     }
     return null

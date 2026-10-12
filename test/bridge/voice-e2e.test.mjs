@@ -18,6 +18,7 @@ const clips =
         wake_only: 'Hey Jarvis.',
         near_miss: 'The service was slow, so Travis went home early.',
         command: 'Search Chrome for the weather tomorrow.',
+        named_command: 'Hey Jarvis, search Chrome for the weather tomorrow.',
       })
     : null
 const skip = clips ? false : 'needs the voice models (npm run models) and Windows speech synthesis'
@@ -70,6 +71,23 @@ test('in command mode everything is transcribed', { skip }, async () => {
   const out = await stt('command', clips.command)
   assert.match(out.text, /weather/i)
   assert.equal(out.wake, undefined)
+})
+
+test('in command mode a leading "Hey Jarvis" is cut off before the words come back', { skip }, async () => {
+  const out = await stt('command', clips.named_command)
+  assert.match(out.text, /^search/i)
+  assert.doesNotMatch(out.text, /jarvis/i)
+  assert.equal(out.wake, undefined)
+})
+
+test('a compressed segment while dormant is refused, never passed on to Scribe', { skip }, async () => {
+  const res = await fetch(`http://127.0.0.1:${bridge.port}/stt?mode=wake`, {
+    method: 'POST',
+    headers: { 'content-type': 'audio/webm', 'x-vas-token': bridge.token },
+    body: Buffer.alloc(4000, 1),
+  })
+  assert.equal(res.status, 415)
+  assert.equal((await res.json()).text, '')
 })
 
 test('anything but 16 kHz WAV is refused clearly', { skip }, async () => {

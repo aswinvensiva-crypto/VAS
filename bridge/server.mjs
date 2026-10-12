@@ -833,7 +833,9 @@ const handleRequest = async (req, res) => {
     const audio = Buffer.concat(chunks)
 
     if (!type.includes('wav')) {
-      // A compressed segment from an older face: only Scribe can read it.
+      // A compressed segment from an older face: only Scribe can read it —
+      // and dormant audio never goes there, so a wake-mode one is refused.
+      if (mode === 'wake') return json(415, { text: '', reason: 'send 16 kHz WAV' })
       const key = elevenKey()
       if (!key) return json(415, { text: '', reason: 'send 16 kHz WAV' })
       try {

@@ -83,7 +83,7 @@ export function createVoiceEngine({ config }) {
       config = next
       refreshKeywords()
     },
-    /** @returns {Promise<{keyword: string, start: number, end: number|null} | null>} */
+    /** @returns {Promise<{keyword: string, start: number|null, end: number|null} | null>} */
     spot(samples) {
       if (!keywords) return Promise.resolve(null)
       return call('fast', 'kws', samples, { modelDir: modelPath('kws'), keywordsFile: keywords })

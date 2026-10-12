@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { encodeWav, parseWav, rms, WavError } from '../../bridge/voice/wav.mjs'
 import { keywordLines } from '../../bridge/voice/keywords.mjs'
-import { cleanTranscript, isPhantom, stripWake } from '../../bridge/voice/transcript.mjs'
+import { cleanTranscript, isPhantom, opensWithWake, speechRatio, stripName, stripWake } from '../../bridge/voice/transcript.mjs'
 import { DEFAULT_WAKE_KEYWORDS } from '../../bridge/store/config.mjs'
 
 test('WAV: 16-bit mono round trip', () => {
@@ -49,4 +49,55 @@ test('transcripts: annotations removed, invented phrases dropped only when quiet
   assert.equal(isPhantom('...', { seconds: 2, rms: 0.1 }), true)
   assert.equal(isPhantom('open chrome', { seconds: 0.3, rms: 0.1 }), true)
   assert.equal(isPhantom('open chrome', { seconds: 1.0, rms: 0.1 }), false)
+})
+
+/** A stretch of audio: deterministic noise at `level`, in syllable bursts when `voiced`. */
+function audio(seconds, level, { voiced = false } = {}) {
+  let seed = 3
+  return Float32Array.from({ length: Math.round(seconds * 16000) }, (_, i) => {
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    const noise = (seed / 2147483648) * 2 - 1
+    return noise * level * (voiced ? Math.abs(Math.sin((Math.PI * 4 * i) / 16000)) : 1)
+  })
+}
+const join = (...parts) => {
+  const out = new Float32Array(parts.reduce((n, p) => n + p.length, 0))
+  let at = 0
+  for (const p of parts) {
+    out.set(p, at)
+    at += p.length
+  }
+  return out
+}
+
+test('speech ratio: how much of a segment is sound at all', () => {
+  const room = 0.002
+  // What the face's detector sends for a one-word answer: 300 ms before, 650 ms after.
+  const yes = join(audio(0.3, room), audio(0.35, 0.2, { voiced: true }), audio(0.65, room))
+  const sentence = join(audio(0.3, room), audio(2.5, 0.2, { voiced: true }), audio(0.65, room))
+  const click = join(audio(1, room), audio(0.06, 0.5), audio(1.5, room))
+  assert.ok(speechRatio(yes) > 0.2, String(speechRatio(yes)))
+  assert.ok(speechRatio(sentence) > 0.6, String(speechRatio(sentence)))
+  assert.ok(speechRatio(click) < 0.05, String(speechRatio(click)))
+  assert.equal(speechRatio(new Float32Array(32000)), 0) // digital silence
+  assert.ok(speechRatio(audio(2, 0.05)) < 0.05) // a steady hiss, however loud, is not speech
+  assert.equal(speechRatio(new Float32Array(100)), 0) // shorter than one frame
+})
+
+test('a mostly silent segment cannot produce text, on the phantom list or off it', () => {
+  const click = join(audio(1, 0.002), audio(0.06, 0.5), audio(1.5, 0.002))
+  const said = { seconds: 2.56, rms: 0.05, speech: speechRatio(click) }
+  assert.equal(isPhantom('Please remember to like and share.', said), true)
+  assert.equal(isPhantom('Please remember to like and share.', { ...said, speech: 0.4 }), false)
+  // Without a measurement the other checks still apply on their own.
+  assert.equal(isPhantom('open chrome', { seconds: 1.0, rms: 0.1 }), false)
+})
+
+test('stripName drops only a known name; opensWithWake needs the greeting too', () => {
+  assert.equal(stripName('Jarvis, open Spotify.'), 'open Spotify.')
+  assert.equal(stripName('Hey Siri is worse.'), 'Hey Siri is worse.')
+  assert.equal(opensWithWake('Hey Jarvis, play some music.'), true)
+  assert.equal(opensWithWake('ok travis what time is it'), true)
+  assert.equal(opensWithWake('Jarvis, play some music.'), false)
+  assert.equal(opensWithWake('Yes, confirm it.'), false)
 })
