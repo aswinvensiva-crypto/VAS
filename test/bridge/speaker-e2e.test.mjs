@@ -23,13 +23,9 @@ const ENROLL = Object.fromEntries(PROMPTS.map((p, i) => [`e${i}`, p]))
 const clips =
   models.speaker && models.kws && models['whisper-base'] ? synthesize({ ...ENROLL, wake: 'Hey Jarvis, open Spotify.' }) : null
 const skip = clips ? false : 'needs the voice models and Windows speech synthesis'
-
-/**
- * A synthesised line is posted as it comes: SAPI leaves about 0.12 s of quiet
- * before the speech and 0.75 s after, close to the 0.3 s and 0.65 s the face's
- * voice detector keeps, so "Yes." arrives at about 1.3 s, as it would live.
- */
-const recorded = (file) => readFileSync(file)
+// Synthesised lines are posted as they come: SAPI leaves about 0.12 s of quiet
+// before the speech and 0.75 s after, close to the 0.3 s and 0.65 s the face's
+// voice detector keeps, so "Yes." arrives at about 1.3 s, as it would live.
 
 let bridge
 before(async () => {
@@ -39,11 +35,11 @@ after(async () => {
   await bridge?.stop()
 })
 
-const call = async (method, path, body) => {
+const call = async (method, path, file) => {
   const res = await fetch(`http://127.0.0.1:${bridge.port}${path}`, {
     method,
     headers: { 'content-type': 'audio/wav', 'x-vas-token': bridge.token },
-    body,
+    body: file ? readFileSync(file) : undefined,
   })
   return res.json()
 }
@@ -58,7 +54,7 @@ test('enrollment refuses to finish early, then saves a voiceprint and tunes the 
   let session
   let last
   for (const [i, key] of Object.keys(ENROLL).entries()) {
-    last = await call('POST', `/voice/enroll${session ? `?session=${session}` : ''}`, recorded(clips[key]))
+    last = await call('POST', `/voice/enroll${session ? `?session=${session}` : ''}`, clips[key])
     assert.equal(last.ok, true, JSON.stringify(last))
     session = last.session
     assert.equal(last.count, i + 1)
@@ -87,9 +83,9 @@ test('enrollment refuses to finish early, then saves a voiceprint and tunes the 
 })
 
 test('the enrolled voice scores as the owner and still wakes JARVIS, on the tuned setting', { skip }, async () => {
-  const scored = await call('POST', '/voice/test', readFileSync(clips.wake))
+  const scored = await call('POST', '/voice/test', clips.wake)
   assert.equal(scored.verdict, 'owner', JSON.stringify(scored))
-  const out = await call('POST', '/stt?mode=wake', readFileSync(clips.wake))
+  const out = await call('POST', '/stt?mode=wake', clips.wake)
   assert.equal(out.wake?.keyword, 'HEY_JARVIS', JSON.stringify(out))
   assert.equal(out.owner?.verdict, 'owner')
 })
@@ -97,7 +93,7 @@ test('the enrolled voice scores as the owner and still wakes JARVIS, on the tune
 test('forgetting the voice turns the check off', { skip }, async () => {
   assert.equal((await call('DELETE', '/voice/enroll')).ok, true)
   assert.equal((await call('GET', '/voice/status')).enrolled, false)
-  const out = await call('POST', '/stt?mode=wake', readFileSync(clips.wake))
+  const out = await call('POST', '/stt?mode=wake', clips.wake)
   assert.equal(out.owner, undefined)
   assert.equal(out.wake?.keyword, 'HEY_JARVIS')
 })
