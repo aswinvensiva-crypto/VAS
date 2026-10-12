@@ -15,8 +15,8 @@ import { fileURLToPath } from 'node:url'
 import { APP_ORIGIN, registerAppScheme, serveApp } from './protocol.mjs'
 import { startBridgeHost } from './bridge-host.mjs'
 import { createTray, trayIconPath } from './tray.mjs'
-import { loadConfig } from '../bridge/store/config.mjs'
-import { dataDir } from '../bridge/store/files.mjs'
+import { loadConfig, readConfigStrict } from '../bridge/store/config.mjs'
+import { dataDir, watchData } from '../bridge/store/files.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(here, '..')
@@ -166,6 +166,23 @@ function registerHotkey(accelerator) {
   return null
 }
 
+/**
+ * The hotkey follows config.json while VAS runs, as the bridge's settings do:
+ * edit it and the old shortcut is let go and the new one taken, with the same
+ * fallbacks as at startup. A file caught half-edited changes nothing.
+ */
+function followHotkeySetting(initial) {
+  let wanted = initial ?? null
+  watchData('config.json', async () => {
+    const config = await readConfigStrict().catch(() => null)
+    if (!config || config.hotkey === wanted) return
+    wanted = config.hotkey
+    if (hotkey) globalShortcut.unregister(hotkey)
+    hotkey = registerHotkey(config.hotkey)
+    console.log(`[vas] push-to-talk hotkey is now ${hotkey ?? 'unavailable'}`)
+  })
+}
+
 ipcMain.on('vas:boot', (event) => {
   event.returnValue = {
     bridge: { ws: bridge.state.ws, http: bridge.state.http, token: bridge.state.token },
@@ -208,6 +225,7 @@ app.whenReady().then(async () => {
 
   const config = await loadConfig().catch(() => null)
   hotkey = registerHotkey(config?.hotkey)
+  followHotkeySetting(config?.hotkey)
 
   createWindow()
   tray = createTray({
@@ -222,6 +240,10 @@ app.whenReady().then(async () => {
     onEnroll: () => {
       showWindow()
       win?.webContents.send('vas:tray', { cmd: 'enroll' })
+    },
+    onSettings: () => {
+      showWindow()
+      win?.webContents.send('vas:tray', { cmd: 'settings' })
     },
     onRestartBrain: () => bridge.restart(),
     onQuit: () => void quit(),

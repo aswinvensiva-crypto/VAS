@@ -7,7 +7,7 @@
  * keys off `desktop` being non-null, so the same build still runs in a plain
  * browser tab for development.
  */
-export type TrayCommand = { cmd: 'listening'; value: boolean } | { cmd: 'enroll' }
+export type TrayCommand = { cmd: 'listening'; value: boolean } | { cmd: 'enroll' } | { cmd: 'settings' }
 
 export interface VasDesktop {
   bridge: { ws: string; http: string; token: string }

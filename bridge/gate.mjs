@@ -26,7 +26,7 @@ import { audit as defaultAudit } from './store/audit.mjs'
  * yes counts.
  */
 
-const Tier = z.enum(['free', 'remember', 'confirm', 'deny'])
+export const Tier = z.enum(['free', 'remember', 'confirm', 'deny'])
 
 export const DEFAULT_TIERS = {
   'app.open': 'remember',
@@ -46,10 +46,14 @@ export const DEFAULT_TIERS = {
   'voice.forget': 'confirm',
 }
 
+/**
+ * Whose yes counts is not in here: it is config.json's owner.require, the one
+ * owner setting the voice pipeline reads too (an old requireOwner in this file
+ * is moved there at startup, see migrateOwnerRequirement). Unknown keys are
+ * dropped on read, so an old file still loads.
+ */
 const PermissionsSchema = z.object({
   version: z.literal(1).default(1),
-  /** Whose yes counts: 'actions' (an enrolled owner, for anything gated), 'off'. */
-  requireOwner: z.enum(['actions', 'all', 'off']).default('actions'),
   /** A click on the on-screen Confirm button counts as a yes. */
   allowClickConfirm: z.boolean().default(true),
   /** Lockdown: nothing but unlock runs until it is lifted. */
@@ -98,8 +102,18 @@ export function parseConfirm(text) {
  *        whose voice the latest segment was in, and whether the owner spoke in
  *        the last minute (so a short "yes" too brief to judge still counts
  *        right after the owner gave the command)
+ * @param {() => 'all'|'actions'|'off'} [deps.requireOwner] the owner requirement
+ *        (config.json owner.require), asked on every check so a change in
+ *        Settings applies to the very next question. 'all' and 'actions' both
+ *        want the owner's yes here; they differ only in what is heard at all.
  */
-export function createGate({ ask, cancel = () => {}, audit = defaultAudit, owner = () => ({ verdict: 'unenrolled' }) }) {
+export function createGate({
+  ask,
+  cancel = () => {},
+  audit = defaultAudit,
+  owner = () => ({ verdict: 'unenrolled' }),
+  requireOwner = () => 'all',
+}) {
   let queue = Promise.resolve()
   const pending = new Set()
   // Bumped by abortAll. A question still waiting its turn in the queue when
@@ -188,7 +202,7 @@ export function createGate({ ask, cancel = () => {}, audit = defaultAudit, owner
     // means someone is at the keyboard, which is its own proof.
     const who = ownerVerdict ?? owner().verdict
     const ownerOk =
-      permissions.requireOwner === 'off' ||
+      requireOwner() === 'off' ||
       source === 'click' ||
       who === 'owner' ||
       who === 'unenrolled' ||

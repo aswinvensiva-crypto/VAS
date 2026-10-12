@@ -1996,3 +1996,306 @@ kbd {
 .models-progress { margin: 10px auto 4px; height: 4px; width: 80%; background: rgba(92, 242, 239, 0.15); }
 .models-progress > div { height: 100%; background: #5cf2ef; }
 .models-file { font-size: 11px; opacity: 0.7; }
+
+/* ----------------------------------------------------------------- settings */
+/*
+   The Settings drawer (S, or the tray's "Settings…"). Down the right-hand side
+   so the reactor and the conversation stay in view, in the blades' glass so it
+   reads as part of the same instrument. Pinned to the neutral interface cyan
+   rather than --accent: it is not a phase, and it must not turn amber because
+   he happens to be asking a question.
+
+   Above the HUD, the blades and the diagnostics; below the permission
+   question and the enrollment screen, which must never be hidden by it. At the
+   window's minimum (720x480) it keeps a 16px margin all round and the body
+   scrolls, so every control stays reachable.
+*/
+.settings {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  bottom: 16px;
+  z-index: 30;
+  width: min(400px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--interface) 9%, rgba(4, 12, 18, 0.95)),
+    color-mix(in srgb, var(--interface) 3%, rgba(2, 8, 12, 0.97))
+  );
+  border: 1px solid color-mix(in srgb, var(--interface) 28%, transparent);
+  backdrop-filter: blur(14px);
+  box-shadow:
+    0 24px 70px rgba(0, 0, 0, 0.62),
+    0 0 34px -12px color-mix(in srgb, var(--interface) 42%, transparent);
+  color: #cfeff0;
+  font-size: 13px;
+  line-height: 1.45;
+  outline: none;
+  animation: settingsIn 200ms ease-out;
+}
+
+@keyframes settingsIn {
+  from { opacity: 0; transform: translateX(14px) }
+  to   { opacity: 1; transform: none }
+}
+
+.settings-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding: 9px 10px 9px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--interface) 18%, transparent);
+  background: color-mix(in srgb, var(--interface) 7%, transparent);
+}
+
+.settings-title {
+  margin-right: auto;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--interface) 92%, white);
+  text-shadow: 0 0 16px color-mix(in srgb, var(--interface) 55%, transparent);
+}
+
+/* Six tabs in two rows of three: a single row of six cannot fit "CORRECTIONS"
+   and "PERMISSIONS" at a readable size in a 400px drawer. */
+.settings-tabs {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  padding: 8px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--interface) 12%, transparent);
+}
+
+.settings-tab {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 6px 4px;
+  opacity: 0.6;
+  cursor: pointer;
+  transition: opacity 160ms ease, background 160ms ease, border-color 160ms ease;
+}
+.settings-tab:hover { opacity: 0.9 }
+.settings-tab-on {
+  opacity: 1;
+  color: color-mix(in srgb, var(--interface) 85%, white);
+  border-color: color-mix(in srgb, var(--interface) 40%, transparent);
+  background: color-mix(in srgb, var(--interface) 14%, transparent);
+}
+
+.settings-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px;
+}
+.settings-body::-webkit-scrollbar { width: 8px }
+.settings-body::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--interface) 30%, transparent);
+  border-radius: 8px;
+}
+/* A change in flight: the controls stay where they are but read as waiting. */
+.settings[aria-busy='true'] .settings-body { opacity: 0.7; cursor: progress }
+
+/* The bridge's verdict on the last change, kept in one fixed line at the foot
+   so the lists above never jump when it appears. */
+.settings-note {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 7px 14px;
+  border-top: 1px solid color-mix(in srgb, var(--interface) 12%, transparent);
+  font-size: 12px;
+  color: #3ef2a8;
+}
+.settings-note-bad { color: #ff7a6b }
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 14px;
+}
+
+.settings-label,
+.settings-section {
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--interface) 75%, white);
+  opacity: 0.7;
+}
+.settings-section { margin: 16px 0 4px }
+.settings-section:first-child { margin-top: 0 }
+
+.settings-hint,
+.settings-sub {
+  font-size: 11px;
+  opacity: 0.55;
+}
+.settings-sub { display: block; margin-top: 1px }
+
+.settings-lead {
+  margin: 0 0 12px;
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.settings-empty {
+  padding: 6px 0 10px;
+  font-size: 12px;
+  opacity: 0.55;
+}
+
+.settings-input {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--interface) 24%, transparent);
+  border-radius: 0;
+  background: rgba(0, 0, 0, 0.35);
+  color: #e8ffff;
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+.settings-input:focus {
+  border-color: color-mix(in srgb, var(--interface) 70%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--interface) 30%, transparent);
+}
+.settings-input::placeholder { color: rgba(207, 239, 240, 0.35) }
+.settings-input option { background: #03121a; color: #e8ffff }
+
+.settings-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.settings-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--interface) 9%, transparent);
+}
+
+.settings-item-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The tier picker sits beside its action's name, so it must not take the row. */
+.settings-tier {
+  flex: 0 0 auto;
+  width: auto;
+  max-width: 48%;
+  font-size: 12px;
+}
+
+.settings-btn {
+  flex: 0 0 auto;
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--interface) 26%, transparent);
+  background: transparent;
+  color: color-mix(in srgb, var(--interface) 80%, white);
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  padding: 5px 9px;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+.settings-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--interface) 18%, transparent);
+  border-color: color-mix(in srgb, var(--interface) 46%, transparent);
+}
+.settings-btn:disabled { opacity: 0.4; cursor: default }
+/* Armed: the next press cannot be taken back. */
+.settings-btn-danger,
+.settings-btn-danger:hover:not(:disabled) {
+  border-color: rgba(255, 122, 107, 0.65);
+  background: rgba(255, 122, 107, 0.14);
+  color: #ffc2ba;
+}
+
+.settings-link {
+  appearance: none;
+  border: 0;
+  background: none;
+  margin-left: 8px;
+  padding: 0;
+  color: color-mix(in srgb, var(--interface) 80%, white);
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  opacity: 0.7;
+  cursor: pointer;
+}
+.settings-link:hover { opacity: 1 }
+
+.settings-add {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.settings-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 0;
+  cursor: pointer;
+}
+.settings-check input {
+  margin: 3px 0 0;
+  accent-color: var(--interface);
+  cursor: pointer;
+}
+
+.settings-close {
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--interface) 24%, transparent);
+  background: transparent;
+  color: color-mix(in srgb, var(--interface) 80%, white);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  width: 26px;
+  height: 24px;
+  cursor: pointer;
+}
+.settings-close:hover { background: color-mix(in srgb, var(--interface) 18%, transparent) }
+
+.settings :focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--interface) 80%, transparent);
+  outline-offset: 1px;
+}
+.settings .settings-input:focus-visible { outline: none }
+
+@media (prefers-reduced-motion: reduce) {
+  .settings { animation: none }
+}

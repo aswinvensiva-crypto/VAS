@@ -31,8 +31,9 @@ import { neuronsServer } from './neurons/mcp.mjs'
 import { fromOtherVoice, heardOf, judgedReply } from './heard.mjs'
 import { keepCatalogFresh } from './neurons/lib/apps.mjs'
 import { loadCorrections } from './corrections/store.mjs'
+import { createSettings } from './settings.mjs'
 import { dataDir } from './store/files.mjs'
-import { loadConfig } from './store/config.mjs'
+import { loadConfig, migrateOwnerRequirement } from './store/config.mjs'
 import { createVoiceEngine } from './voice/engine.mjs'
 import { handleSegment } from './voice/stt.mjs'
 import { parseWav } from './voice/wav.mjs'
@@ -89,6 +90,7 @@ if (!TOKEN && !INSECURE_DEV) {
 }
 
 /** VAS settings (%APPDATA%\VAS\data\config.json), and the local voice engine. */
+await migrateOwnerRequirement()
 const CONFIG = await loadConfig()
 const VOICE = createVoiceEngine({ config: CONFIG })
 
@@ -100,6 +102,19 @@ const BRAIN = createBrain({ known: new Set(NEURONS.keys()) })
 const CORRECTIONS = await loadCorrections()
 /** The Start menu catalog, re-read in the background once it is a day old. */
 keepCatalogFresh()
+
+/**
+ * The Settings drawer's endpoints (bridge/settings.mjs), and hand edits to
+ * config.json applied while running — both update CONFIG in place.
+ */
+const SETTINGS = createSettings({
+  config: CONFIG,
+  voice: VOICE,
+  corrections: CORRECTIONS,
+  brain: BRAIN,
+  speaker: () => SPEAKER,
+})
+SETTINGS.watch()
 
 /**
  * "Only respond to my voice": the enrolled voiceprint (null until you enroll),
@@ -575,7 +590,9 @@ const handleRequest = async (req, res) => {
   const cors = corsFor(req)
 
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, cors)
+    // DELETE is not a simple method, so the Settings drawer's removals are
+    // preflighted and need it named here.
+    res.writeHead(204, { ...cors, 'access-control-allow-methods': 'GET, POST, DELETE' })
     return res.end()
   }
 
@@ -916,6 +933,28 @@ const handleRequest = async (req, res) => {
     return res.end(JSON.stringify({ started: want }))
   }
 
+  // The Settings drawer: corrections, apps, routines, permissions and the
+  // general settings, read and changed here (bridge/settings.mjs).
+  if (pathname === '/settings' || pathname.startsWith('/settings/')) {
+    const chunks = []
+    let size = 0
+    for await (const chunk of req) {
+      chunks.push(chunk)
+      size += chunk.length
+      if (size > 64 * 1024) {
+        req.destroy()
+        res.writeHead(413, cors)
+        return res.end('body too large')
+      }
+    }
+    const out = (await SETTINGS.handle(req, pathname, Buffer.concat(chunks).toString('utf8'))) ?? [
+      404,
+      { ok: false, reason: 'no such setting' },
+    ]
+    res.writeHead(out[0], { ...cors, 'content-type': 'application/json', 'cache-control': 'no-store' })
+    return res.end(JSON.stringify(out[1]))
+  }
+
   if (pathname.startsWith('/voice/')) {
     const chunks = []
     let size = 0
@@ -1179,6 +1218,8 @@ wss.on('connection', (socket) => {
   const gate = createGate({
     ask,
     owner: voiceCheck,
+    // Read per question: CONFIG is updated in place when settings change.
+    requireOwner: () => CONFIG.owner.require,
     cancel: () => {
       for (const [id, slot] of waiting) {
         if (slot.kind !== 'confirm') continue
