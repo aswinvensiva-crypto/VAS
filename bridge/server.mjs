@@ -19,7 +19,7 @@ import { WebSocketServer } from 'ws'
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk'
 import { displayServer } from './panels.mjs'
 import { uiServer } from './ui.mjs'
-import { chromeAvailable, chromeServer } from './chrome.mjs'
+import { chromeAvailable, chromeServer, createTaint } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { createPolicy, sessionTools } from './policy.mjs'
 import { createGate } from './gate.mjs'
@@ -1170,6 +1170,14 @@ wss.on('connection', (socket) => {
   })
 
   /**
+   * Which sites the Claude turn in flight has read in the user's browser (the
+   * taint rule, chrome.mjs). Shared by the tools that can send an address off
+   * the machine, and emptied when a turn's `result` arrives — the one point
+   * the next turn is known not to have begun, since the agent answers in order.
+   */
+  const taint = createTaint({ gate })
+
+  /**
    * Handing a question to Claude: tag the turn with its id and feed it to the
    * agent's input — prefixed with anything handled locally since its last
    * turn, so it knows what just happened on this PC.
@@ -1308,21 +1316,24 @@ wss.on('connection', (socket) => {
           jarvis: displayServer(
             (panel) => send({ type: 'panel', panel }),
             (blade) => send({ type: 'blade', blade }),
+            { taint },
           ),
           // The interface controls, on the same socket. A separate key because
           // MCP tool names are `mcp__<key>__<tool>` and one key can only carry
           // one server; the underscore in it is why decideTool and announceTool
           // both name `jarvis_ui` explicitly.
           jarvis_ui: uiServer((op, args) => send({ type: 'ui', op, args })),
-          // The user's own Chrome, over the extension's native-host socket. It
-          // holds no per-connection state, but it is built here with the rest so
-          // the write gate is read once, at the same point as everything else.
-          jarvis_chrome: chromeServer({ allowWrites: ALLOW_WRITES, gate }),
+          // The user's own Chrome, over the extension's native-host socket. Its
+          // only per-connection state is this connection's gate and taint, and
+          // it is built here so the write gate is read once, with the rest.
+          jarvis_chrome: chromeServer({ allowWrites: ALLOW_WRITES, gate, taint }),
           // The camera, which unlike everything else here has to ask and wait.
           jarvis_eyes: visionServer(ask, { gate, hidden: () => WINDOW_HIDDEN }),
           // Apps and sites through the catalog and the permission gate, for the
           // requests no fixed order matches ("can you get WhatsApp up?").
-          jarvis_neurons: neuronsServer(() => localTurns.toolContext()),
+          // Claude's own calls carry the taint rule (chrome_open after a read);
+          // a spoken order run locally is the user's, and does not.
+          jarvis_neurons: neuronsServer(() => Object.assign(localTurns.toolContext(), { taint })),
         },
         // A plain system prompt, not the claude_code preset. The preset is
         // tuned for a coding agent — verbose, file-oriented, and a large chunk
@@ -1491,6 +1502,7 @@ wss.on('connection', (socket) => {
               turnIds.shift()
               finishTurn?.()
               finishTurn = null
+              taint.reset()
               // One turn's tool ids are never referred to again, and these
               // otherwise grow for as long as the socket is open.
               seenTools.clear()

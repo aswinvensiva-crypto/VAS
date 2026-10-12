@@ -313,11 +313,47 @@ the bytes — it does not know whether the user asked to read this or merely to
 see it, what is already on screen, or whether the point was the picture or the
 argument. You know those things. Overrule it whenever you have reason to.`
 
+/** The named entities that can spell out a URL's punctuation. */
+const URL_ENTITIES = { colon: ':', sol: '/', period: '.', tab: '\t', newline: '\n' }
+
+const fromCode = (n) => (n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : '')
+
+/**
+ * Every address in a piece of markup that something might fetch — an img src,
+ * a poster, a srcset entry, a CSS url(), or just a URL in the text, which costs
+ * at most a question it did not need.
+ *
+ * Entities are decoded first, the way the renderer's parser will decode them,
+ * and tabs and newlines dropped, the way a URL parser drops them: otherwise
+ * `https&#58;//` or `ht&#10;tps://` walks straight past a pattern looking for
+ * `https://` and is fetched all the same.
+ */
+export function urlsIn(html) {
+  const decoded = String(html ?? '')
+    .replace(/&#x([0-9a-f]+);?/gi, (_, hex) => fromCode(parseInt(hex, 16)))
+    .replace(/&#(\d+);?/g, (_, dec) => fromCode(Number(dec)))
+    .replace(/&(colon|sol|period|tab|newline);/gi, (_, name) => URL_ENTITIES[name.toLowerCase()])
+    .replace(/[\t\n\r]/g, '')
+  // http(s) anywhere; protocol-relative //host only where an address starts,
+  // so the slashes of file:///C:/… are not read as a host called "c".
+  return [...decoded.matchAll(/https?:\/\/[^\s"'<>()\\]+|(?<![\w:/.-])\/\/[^\s"'<>()\\]+/gi)].map((m) => m[0])
+}
+
 /**
  * @param {(panel: object) => void} emit - pushes the panel to the browser
  * @param {(blade: object) => void} emitBlade - pushes a blade to the browser
+ * @param {{ taint?: { leave: Function } | null }} [options]
+ *        the connection's taint rule (chrome.mjs): once a turn has read a page
+ *        in the user's browser, an address on another site is put to the user
+ *        before it is probed or put on screen — both send a request there, and
+ *        the request carries whatever the model wrote into the address
  */
-export function displayServer(emit, emitBlade) {
+export function displayServer(emit, emitBlade, { taint = null } = {}) {
+  /** Whether the turn may send requests to `urls`; always, without a taint rule. */
+  const mayLeave = async (urls, verb) => (taint ? taint.leave(urls, verb) : { allowed: true })
+  const refused = (what, reason) =>
+    refuse(`Not ${what} — ${reason} Say so in a few words; do not try again unless asked.`)
+
   return createSdkMcpServer({
     name: 'jarvis',
     version: '1.0.0',
@@ -354,6 +390,10 @@ export function displayServer(emit, emitBlade) {
             ],
           }
         }
+        // Pictures in the markup are fetched by the bridge, from wherever their
+        // address says — so they leave the machine like any other request.
+        const leaving = await mayLeave(urlsIn(args.html), 'Show content from')
+        if (!leaving.allowed) return refused('shown', leaving.reason)
         /**
          * Composed markup opens as a blade, not as a card.
          *
@@ -394,6 +434,10 @@ export function displayServer(emit, emitBlade) {
         if (['article', 'image', 'video', 'embed'].includes(kind) && !url) {
           return refuse(`Not opened: kind "${kind}" needs a \`url\`.`)
         }
+        // A page, a picture or a player is fetched from its address; a file on
+        // this machine or the camera never leaves it, and is never asked about.
+        const leaving = await mayLeave([url, ...images, ...urlsIn(args.html)], 'Open')
+        if (!leaving.allowed) return refused('opened', leaving.reason)
 
         const blade = {
           id: `b${Date.now().toString(36)}-${(seq++).toString(36)}`,
@@ -418,6 +462,8 @@ export function displayServer(emit, emitBlade) {
         PROBE_DESCRIPTION,
         { url: z.string().describe('The absolute URL to inspect.') },
         async (args) => {
+          const leaving = await mayLeave(String(args.url ?? ''), 'Look up')
+          if (!leaving.allowed) return refused('checked', leaving.reason)
           const report = await probeUrl(String(args.url ?? ''))
           return { content: [{ type: 'text', text: JSON.stringify(report, null, 1) }] }
         },

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { loadConfig } from '../../store/config.mjs'
 
 /**
  * Your real Chrome, by voice.
@@ -30,16 +31,46 @@ const SITES = {
   amazon: 'https://www.amazon.in',
 }
 
+/**
+ * The built-in names with your own (config.json `sites`) laid over them.
+ *
+ * Read at call time, so a name added to config.json works on the next order
+ * without a restart. Names match lowercased; an address written without a
+ * scheme gets https://, and anything that is not then a web address is
+ * skipped — "open hn in chrome" only ever opens a web page.
+ */
+export async function knownSites() {
+  let own = {}
+  try {
+    own = (await loadConfig()).sites ?? {}
+  } catch {
+    /* an unreadable config is reported where it is loaded; the built-ins still work */
+  }
+  const sites = { ...SITES }
+  for (const [name, address] of Object.entries(own)) {
+    const raw = address.trim()
+    try {
+      const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`)
+      if (url.protocol === 'https:' || url.protocol === 'http:') sites[name.toLowerCase().trim()] = url.href
+    } catch {
+      /* not an address; the name stays unknown */
+    }
+  }
+  return sites
+}
+
 /** "youtube" -> a known site; "x dot com" / "news.ycombinator.com" -> that host; else null. */
-export function siteUrl(spoken) {
+export function siteUrl(spoken, sites = SITES) {
   const s = spoken.toLowerCase().replace(/\bin chrome\b/, '').replace(/[.,!?]+$/, '').trim()
-  if (SITES[s]) return SITES[s]
+  if (Object.hasOwn(sites, s)) return sites[s]
   const host = s.replace(/\s+dot\s+/g, '.').replace(/\s+/g, '')
   if (/^[a-z0-9-]+(\.[a-z0-9-]+)+(\/\S*)?$/.test(host)) return `https://${host}`
   return null
 }
 
 const searchUrl = (q) => `https://www.google.com/search?q=${encodeURIComponent(q)}`
+
+const UNAVAILABLE = "Chrome isn't available — open it with the Claude extension on."
 
 async function unavailable(ctx) {
   return !(await ctx.chrome.available())
@@ -51,8 +82,16 @@ export const chrome_open = {
   tier: 'free',
   params: { site: z.string().min(1).max(200) },
   async run({ site }, ctx) {
-    if (await unavailable(ctx)) return { say: "Chrome isn't available — open it with the Claude extension on." }
-    const url = siteUrl(site) ?? searchUrl(site)
+    if (await unavailable(ctx)) return { say: UNAVAILABLE }
+    const known = siteUrl(site, await knownSites())
+    const url = known ?? searchUrl(site)
+    // Claude calling this as a tool, after reading a page this turn, could be
+    // carrying what it read out in the address: the taint rule (chrome.mjs)
+    // puts a different site to the user first. A spoken order carries none.
+    if (ctx.taint) {
+      const leaving = await ctx.taint.leave(url, 'Go to')
+      if (!leaving.allowed) return { say: leaving.reason, stop: true }
+    }
     const verdict = await ctx.gate.check('chrome.navigate', { prompt: `Open ${site}?`, args: { url } })
     if (!verdict.allowed) return { say: verdict.reason }
     try {
@@ -60,7 +99,7 @@ export const chrome_open = {
     } catch (err) {
       return { say: `Chrome wouldn't open it (${err.message}).` }
     }
-    return { say: siteUrl(site) ? `Opening ${site}.` : `Searching for ${site}.` }
+    return { say: known ? `Opening ${site}.` : `Searching for ${site}.` }
   },
 }
 
@@ -92,7 +131,7 @@ export const chrome_read_tab = {
   tier: 'free',
   params: {},
   async run(_params, ctx) {
-    if (await unavailable(ctx)) return { say: "Chrome isn't available — open it with the Claude extension on." }
+    if (await unavailable(ctx)) return { say: UNAVAILABLE }
     const url = await ctx.chrome.currentUrl()
     if (!url) return { say: "I can't see a Chrome window to read." }
     if (!/^https?:\/\//i.test(url)) return { say: "That page isn't one I can read." }

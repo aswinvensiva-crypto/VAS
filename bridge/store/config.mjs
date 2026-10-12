@@ -37,6 +37,9 @@ export const ConfigSchema = z.object({
   userName: z.string().min(1).max(40).optional(),
   /** Global push-to-talk shortcut, in Electron accelerator syntax. */
   hotkey: z.string().default('Control+Alt+Space'),
+  /** Your own names for sites, for "open … in chrome": spoken name -> address,
+   *  e.g. { "hn": "news.ycombinator.com" }. Laid over the built-in list. */
+  sites: z.record(z.string(), z.string()).default({}),
   wake: z
     .object({ keywords: z.array(Keyword).default(DEFAULT_WAKE_KEYWORDS) })
     .prefault({}),
