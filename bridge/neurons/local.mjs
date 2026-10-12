@@ -46,9 +46,12 @@ export function createLocal({ send, ask, gate, brain, corrections, toClaude, onV
     return resolveApp(said, pseudo).best?.app.name ?? null
   }
 
-  function context({ id, signal, after }) {
+  function context({ id, signal, after, raw }) {
     const ctx = {
       signal,
+      /** The words as transcribed, before any learned correction — what a
+       *  neuron learning from speech (a correction, a routine) must read. */
+      raw,
       gate,
       brain,
       corrections,
@@ -92,10 +95,20 @@ export function createLocal({ send, ask, gate, brain, corrections, toClaude, onV
     /**
      * Handle one question. Returns once it is answered locally or handed on.
      * Synchronous routing keeps questions in the order they were asked.
+     *
+     * Routing reads `text`, the words after learned corrections. `meta.raw` is
+     * the same words exactly as transcribed, when the face had them; it is
+     * remembered alongside, because learning from a mishearing needs the
+     * mishearing, not the version that has already been fixed.
+     *
+     * @param {string} text
+     * @param {string|null} id
+     * @param {{ raw?: string, utts?: string[] }} [meta]
      */
-    async handle(text, id) {
+    async handle(text, id, meta = {}) {
+      const raw = meta.raw ?? text
       memory.previousUser = memory.lastUser
-      memory.lastUser = { text, at: Date.now() }
+      memory.lastUser = { text, raw, at: Date.now() }
       const hit = route(text, brain)
       if (!hit) return toClaude(text, id)
 
@@ -107,7 +120,7 @@ export function createLocal({ send, ask, gate, brain, corrections, toClaude, onV
       // gets the same "working on it" cue as a Claude tool would.
       const slow = setTimeout(() => local({ type: 'tool', name: `mcp__jarvis_neurons__${hit.synapse.neurons[0].name}` }), 700)
       try {
-        const r = await runSynapse(hit, context({ id, signal: ac.signal, after }), registry)
+        const r = await runSynapse(hit, context({ id, signal: ac.signal, after, raw }), registry)
         clearTimeout(slow)
         if (ac.signal.aborted || r.aborted) return
         if (r.fallthrough) return toClaude(text, id)

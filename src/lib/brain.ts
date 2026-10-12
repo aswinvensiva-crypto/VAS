@@ -41,14 +41,16 @@ const loadDirect = (): Promise<Direct> =>
     : Promise.reject(new Error('Direct mode is not built into this app.')))
 
 /** Conversation state lives in the bridge session, so history is only threaded
- *  through on the direct path. */
+ *  through on the direct path. So does what was heard (`heard`): only the
+ *  bridge has a record of the speech to judge it against. */
 export async function ask(
   prompt: string,
   history: Msg[],
   handlers: AskHandlers,
-): Promise<{ text: string; tools: string[]; after?: string }> {
+  heard?: bridge.HeardMeta,
+): Promise<{ text: string; tools: string[]; after?: string; ignored?: string }> {
   return usingBridge
-    ? bridge.ask(prompt, handlers)
+    ? bridge.ask(prompt, handlers, heard)
     : (await loadDirect()).ask([...history, { role: 'user', content: prompt }], handlers)
 }
 

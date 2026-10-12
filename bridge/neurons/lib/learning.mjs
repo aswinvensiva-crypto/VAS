@@ -25,7 +25,11 @@ export const correction = {
     // Only a correction of what was just said, a moment ago; anything else
     // ("I said I'd be late") is ordinary conversation for Claude.
     if (!previous || Date.now() - previous.at > 30_000) return { fallthrough: true }
-    const learned = learnCorrection(previous.text, text)
+    // Learned from what was actually transcribed. The routed text has already
+    // been through the corrections learned so far, so aligning against it
+    // would miss the mishearing whenever an older correction touched it too.
+    const heard = previous.raw ?? previous.text
+    const learned = learnCorrection(heard, text)
     if (!learned) return { fallthrough: true }
     const verdict = await ctx.gate.check('correction.save', {
       prompt: `Got it — when I hear "${learned.heard}", you mean "${learned.meant}". Remember that?`,
@@ -40,7 +44,7 @@ export const correction = {
       }
     }
     // Either way, do what they meant this time.
-    const corrected = ctx.corrections.apply(previous.text)
+    const corrected = ctx.corrections.apply(heard)
     const redo = verdict.allowed ? corrected : text
     const r = await ctx.route(redo)
     return r ?? { handoff: redo }

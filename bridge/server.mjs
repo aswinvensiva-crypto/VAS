@@ -28,6 +28,7 @@ import { createBrain } from './neurons/brain.mjs'
 import { registry as NEURONS } from './neurons/registry.mjs'
 import { createLocal } from './neurons/local.mjs'
 import { neuronsServer } from './neurons/mcp.mjs'
+import { fromOtherVoice, heardOf, judgedReply } from './heard.mjs'
 import { loadCorrections } from './corrections/store.mjs'
 import { dataDir } from './store/files.mjs'
 import { loadConfig } from './store/config.mjs'
@@ -1578,7 +1579,15 @@ wss.on('connection', (socket) => {
        */
       const text = msg.text
       const id = typeof msg.id === 'string' ? msg.id : null
-      void settling.then(() => localTurns.handle(text, id))
+      // The words as heard, and the segments they were heard in (heard.mjs).
+      const heard = heardOf(msg)
+      if (fromOtherVoice(heard, { enrolled: Boolean(SPEAKER) })) {
+        // Someone else's voice, start to finish. Not a question for JARVIS: an
+        // empty answer sends the face back to listening without a word.
+        send({ type: 'done', text: '', ask: id, ignored: 'other-voice' })
+      } else {
+        void settling.then(() => localTurns.handle(text, id, heard))
+      }
     }
 
     if (msg.type === 'reply' && typeof msg.id === 'string') {
@@ -1586,7 +1595,9 @@ wss.on('connection', (socket) => {
       if (slot) {
         waiting.delete(msg.id)
         clearTimeout(slot.timer)
-        slot.resolve(msg)
+        // A spoken yes is judged on whose voice its own segments were in, as
+        // the bridge recorded them — never on the face's say-so.
+        slot.resolve(slot.kind === 'confirm' ? judgedReply(msg, { enrolled: Boolean(SPEAKER) }) : msg)
       }
     }
 

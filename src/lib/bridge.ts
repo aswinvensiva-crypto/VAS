@@ -41,7 +41,24 @@ type Frame = {
   timeoutMs?: number
   /** On a finished turn: what the face should do next ('dormant'). */
   after?: string
+  /** On a finished turn: why the bridge chose not to answer at all
+   *  ('other-voice': it was someone else talking). */
+  ignored?: string
 }
+
+/**
+ * What the face knows about the speech behind a question or an answer, sent
+ * along with the words so the bridge can judge them on it: the words exactly
+ * as transcribed, before any learned correction, and the ids /stt gave the
+ * segments they were heard in. Both optional — typed text has neither.
+ */
+export type HeardMeta = { raw?: string; utts?: string[] }
+
+/** The parts of a HeardMeta worth putting on the wire. */
+const heardFields = (heard?: HeardMeta) => ({
+  ...(heard?.raw ? { raw: heard.raw } : {}),
+  ...(heard?.utts?.length ? { utts: heard.utts } : {}),
+})
 
 /** Every question gets an id so its answer can be told from anyone else's. */
 let askSeq = 0
@@ -97,7 +114,14 @@ export function watchCapture(fn: (req: CaptureRequest) => Promise<CaptureResult>
  * (judged on the bridge), a click, or a cancellation.
  */
 export type ConfirmRequest = { id: string; prompt: string; action: string; timeoutMs: number }
-export type ConfirmAnswer = { text?: string; source: 'voice' | 'click'; approved?: boolean; cancelled?: boolean }
+/** A spoken answer carries its raw words and segment ids (HeardMeta): the
+ *  bridge judges the yes or no on the raw words, in the voice it recorded. */
+export type ConfirmAnswer = {
+  text?: string
+  source: 'voice' | 'click'
+  approved?: boolean
+  cancelled?: boolean
+} & HeardMeta
 let onConfirm: ((req: ConfirmRequest) => Promise<ConfirmAnswer>) | null = null
 let onConfirmCancel: ((id: string) => void) | null = null
 export function watchConfirm(
@@ -375,7 +399,8 @@ let pending: { finish: (fallback?: string) => void } | null = null
 export async function ask(
   prompt: string,
   handlers: AskHandlers,
-): Promise<{ text: string; tools: string[]; after?: string }> {
+  heard?: HeardMeta,
+): Promise<{ text: string; tools: string[]; after?: string; ignored?: string }> {
   /**
    * A new question supersedes the one in flight.
    *
@@ -440,12 +465,17 @@ export async function ask(
       ws.removeEventListener('error', onError)
     }
 
-    const finish = (fallback = '', after?: string) => {
+    const finish = (fallback = '', after?: string, ignored?: string) => {
       if (done) return
       cleanup()
       // Prefer the streamed text; fall back to the final result if this build
       // didn't emit deltas.
-      resolve({ text: (text || fallback).trim(), tools, ...(after ? { after } : {}) })
+      resolve({
+        text: (text || fallback).trim(),
+        tools,
+        ...(after ? { after } : {}),
+        ...(ignored ? { ignored } : {}),
+      })
     }
 
     const fail = (err: Error) => {
@@ -500,7 +530,7 @@ export async function ask(
             break
 
           case 'done':
-            finish(msg.text ?? '', msg.after)
+            finish(msg.text ?? '', msg.after, msg.ignored)
             break
 
           case 'error':
@@ -526,7 +556,7 @@ export async function ask(
     arm()
 
     try {
-      ws.send(JSON.stringify({ type: 'ask', text: prompt, id }))
+      ws.send(JSON.stringify({ type: 'ask', text: prompt, id, ...heardFields(heard) }))
     } catch (err) {
       // The socket can go into CLOSING between connect() resolving and here.
       fail(err instanceof Error ? err : new Error(String(err)))

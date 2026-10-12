@@ -5,6 +5,7 @@ import { startVad, type Vad } from './vad'
 import { caps } from './capabilities'
 import { OVERRIDE, WAKE, afterWake } from './wakeWords'
 import { desktop } from './desktop'
+import { answersQuestion, makeAssembler, type Heard as AssembledHeard } from './assembler'
 
 /**
  * The voice loop.
@@ -36,24 +37,49 @@ export type VoiceMode =
   /** Something is playing that must not be transcribed at all. */
   | 'deaf'
 
+/**
+ * What the bridge said about the speech behind a wake or an utterance, passed
+ * through to the turn it becomes: the words exactly as transcribed (`raw`,
+ * before any learned correction), the ids of the segments they were heard in
+ * (`utts`, none on the browser's recogniser), and for a single segment whose
+ * voice it was and which transcriber heard it.
+ *
+ * The face acts on none of this itself. It goes back to the bridge with the
+ * question or the answer, and the bridge judges them on it.
+ */
+export type Heard = AssembledHeard & {
+  /** The enrolled-voice verdict: 'owner', 'other' or 'unknown'. */
+  owner?: string
+  /** 'kws', 'scribe', or the Whisper model's name. */
+  engine?: string
+}
+
 export type VoiceHandlers = {
   /** Read fresh on every result, so the app never has to re-subscribe. */
   mode: () => VoiceMode
   /** Fired on his name, from a partial — waiting for endpointing feels slow.
    *  `trailing` is whatever followed it, so "Jarvis, what's the weather" is
-   *  one breath rather than two turns. */
-  onWake: (trailing: string) => void
+   *  one breath rather than two turns; `heard` is what the bridge knows
+   *  about it. */
+  onWake: (trailing: string, heard: Heard) => void
   /** The user has genuinely started talking. This is the barge-in trigger. */
   onSpeechStart: () => void
   /** Live transcript, for the caption under the reactor. */
   onPartial: (text: string) => void
-  /** A complete, endpointed utterance. */
-  onUtterance: (text: string) => void
+  /** A complete, endpointed utterance, and what the bridge knows about it. */
+  onUtterance: (text: string, heard: Heard) => void
   /** The recogniser is unusable. Distinct from the user saying nothing. */
   onError: (message: string) => void
   /** While true, every utterance goes straight through unassembled — a yes
    *  or no to "shall I?" is complete the moment it is said. */
   urgent?: () => boolean
+  /**
+   * While `urgent`: when the question being answered stopped playing, on the
+   * Date.now() clock — Infinity while it is still being spoken. Speech that
+   * began before then is the question coming back through the microphone,
+   * never its answer.
+   */
+  questionEnd?: () => number
 }
 
 export type Voice = {
@@ -69,44 +95,6 @@ export type Voice = {
 /** One utterance often produces several partials containing his name. */
 const WAKE_DEBOUNCE = 1500
 
-// ---------------------------------------------------------------------------
-// Assembling one utterance out of several segments
-// ---------------------------------------------------------------------------
-
-/**
- * Why this exists.
- *
- * The voice-activity detector is an energy gate, and energy is a fact about the
- * room rather than about the sentence. It ends a segment after a fixed quiet
- * gap, so "what's the weather in — " *pause* " — London" is two segments, two
- * transcripts and, before this, two turns: the first one asking the model a
- * truncated question, the second arriving as a bare noun with no question left
- * to attach it to. People pause. They pause to think of the word, to look at
- * something, mid-list, before the important part. An assistant that treats the
- * first gap as the end of the thought is one you have to talk to carefully, and
- * having to talk carefully is the whole failure.
- *
- * So the segment is no longer the turn. Transcripts accumulate here, and the
- * turn fires only when the text looks finished AND the room has gone quiet.
- *
- * Crucially this costs nothing in the common case. A complete sentence with no
- * one speaking fires immediately — `holdFor` returns 0 — so the latency of an
- * ordinary question is exactly what it was. The waiting only happens when there
- * is a reason to wait.
- */
-
-/**
- * Ending on one of these means the sentence is not over, whatever the silence
- * says. Function words only: they are closed-class, so the list is complete in
- * a way a content-word list could never be, and none of them is a plausible
- * last word of a real request.
- */
-const CONTINUES =
-  /\b(and|or|but|so|because|since|if|when|while|that|which|who|whose|to|of|in|on|at|by|for|with|from|about|into|onto|over|under|between|through|the|a|an|my|your|his|her|its|our|their|is|are|was|were|be|been|do|does|did|have|has|had|can|could|would|should|will|shall|might|must|like|than|then|as|very|really|just|some|any|all|both|either|neither)$/i
-
-/** Trailing punctuation a transcriber emits mid-thought. */
-const TRAILS = /[,;:–—-]$/
-
 /**
  * A barge-in this soon after he starts a sentence is him, not you.
  *
@@ -120,114 +108,6 @@ const TRAILS = /[,;:–—-]$/
  * is also least likely: the user has not yet heard enough to want to stop him.
  */
 const SELF_GUARD_MS = 350
-
-/**
- * A quiet gap this long with a finished-looking sentence ends the turn.
- *
- * Small on purpose: by the time a transcript reaches the assembler the detector
- * has already sat through SILENCE_MS of quiet and the transcriber has taken its
- * own few hundred milliseconds, so roughly a second of real silence has passed
- * already. All this window has to catch is someone drawing breath to add one
- * more clause. Making it generous here is what would make every ordinary
- * question feel slow.
- */
-const SETTLE_MS = 250
-/** ...and this long when the sentence is plainly unfinished. */
-const CONTINUE_MS = 1600
-/**
- * Nothing is held longer than this in total. A ceiling rather than a timer:
- * without it, someone who ends every clause on "and" could hold a turn open
- * for ever, and the assistant would look like it had stopped listening.
- */
-const MAX_HOLD_MS = 6000
-
-/**
- * How long to keep waiting, given what has been said so far.
- * 0 means "this is a complete thought, send it now".
- */
-function holdFor(text: string): number {
-  const words = text.trim().split(/\s+/).filter(Boolean)
-  if (!words.length) return CONTINUE_MS
-  // An explicit terminator is the speaker telling us they are done.
-  if (/[.!?]$/.test(text)) return 0
-  if (TRAILS.test(text.trim())) return CONTINUE_MS
-  if (CONTINUES.test(words[words.length - 1])) return CONTINUE_MS
-  // One or two words is usually the start of something, not the whole of it —
-  // except for the short commands that genuinely are complete.
-  if (words.length <= 2 && !OVERRIDE.test(text)) return CONTINUE_MS
-  return SETTLE_MS
-}
-
-type Assembler = {
-  /** Add a transcript. `active` is true if the user is audibly still going. */
-  feed: (text: string, active: boolean) => void
-  /** Send whatever is held right now, if anything. */
-  flush: () => void
-  /** Throw away whatever is held — used when he stands down. */
-  cancel: () => void
-  held: () => string
-}
-
-function makeAssembler(h: {
-  emit: (text: string) => void
-  partial: (text: string) => void
-}): Assembler {
-  let held = ''
-  let timer: ReturnType<typeof setTimeout> | null = null
-  let firstAt = 0
-
-  const clear = () => {
-    if (timer) clearTimeout(timer)
-    timer = null
-  }
-
-  const fire = () => {
-    clear()
-    const text = held.trim()
-    held = ''
-    firstAt = 0
-    if (text) h.emit(text)
-  }
-
-  return {
-    feed(text, active) {
-      if (!text.trim()) return
-      held = `${held} ${text}`.replace(/\s+/g, ' ').trim()
-      if (!firstAt) firstAt = Date.now()
-      // The caption shows the whole thought as it assembles, not just the
-      // fragment that happened to arrive last.
-      h.partial(held)
-      diag.holding = held
-      clear()
-
-      // Already talking again. Decide nothing now — the next transcript is
-      // part of this same sentence and will bring more of it.
-      if (active) {
-        timer = setTimeout(fire, MAX_HOLD_MS)
-        return
-      }
-
-      const wait = Math.min(
-        holdFor(held),
-        Math.max(0, MAX_HOLD_MS - (Date.now() - firstAt)),
-      )
-      diag.waitedMs = wait
-      if (wait === 0) {
-        fire()
-        return
-      }
-      timer = setTimeout(fire, wait)
-    },
-    flush: fire,
-    cancel() {
-      clear()
-      held = ''
-      firstAt = 0
-      diag.holding = ''
-    },
-    held: () => held,
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Hearing himself
@@ -313,6 +193,10 @@ export const diag = {
   /** The most recent transcript, whatever the mode. */
   heard: '',
   heardAt: 0,
+  /** Whose voice the bridge judged the last segment to be in ('' with no
+   *  voice enrolled), and which transcriber heard it. */
+  owner: '',
+  heardBy: '',
   /** Last failure — a transcription error, or a capture error. */
   lastError: '',
   /** Times the wake word matched. */
@@ -380,6 +264,24 @@ export async function startVoice(h: VoiceHandlers): Promise<Voice> {
   return bridged ? startBridgedVoice(h) : startBrowserVoice(h)
 }
 
+/** What /stt answers for one segment (bridge/server.mjs, bridge/voice/stt.mjs). */
+type SttResult = {
+  /** The words, after any correction learned from you. */
+  text?: string
+  /** The same words exactly as transcribed. */
+  raw?: string
+  /** The bridge's id for this segment. A turn sends it back, so the bridge
+   *  judges the turn on its own record of the speech, not on the face's. */
+  utt?: string
+  /** Present when the bridge spotted the wake word itself (null: it didn't). */
+  wake?: { keyword: string; trailing: string } | null
+  /** Whose voice it was, once a voice is enrolled. */
+  owner?: { verdict: string; score?: number }
+  /** Which transcriber heard it. */
+  engine?: string
+  reason?: string
+}
+
 /** Local voice detection, and the bridge for the wake word and the words. */
 async function startBridgedVoice(h: VoiceHandlers): Promise<Voice> {
   let lastWake = 0
@@ -397,22 +299,32 @@ async function startBridgedVoice(h: VoiceHandlers): Promise<Voice> {
    *
    * Order is preserved because the drain is single-flight, which matters —
    * "London" arriving before "what's the weather in" is worse than either.
+   *
+   * Each segment keeps the moment its speech began, so an answer to "shall
+   * I?" can be told from speech that started over the question.
    */
-  const pendingAudio: Blob[] = []
+  const pendingAudio: Array<{ blob: Blob; startedAt: number }> = []
   let draining = false
 
   /**
+   * The last moment he was heard saying anything, sampled every audio frame —
+   * the question, or a turn still finishing its sentence. See answersQuestion.
+   */
+  let spokeUntil = 0
+
+  /**
    * Transcripts become turns here rather than one-per-segment.
-   * See makeAssembler for why.
+   * See makeAssembler (assembler.ts) for why.
    */
   const assemble = makeAssembler({
-    emit: (text) => {
+    emit: (text, heard) => {
       diag.dropped = ''
       diag.accepted++
       diag.holding = ''
-      h.onUtterance(text)
+      h.onUtterance(text, heard)
     },
     partial: (text) => h.onPartial(text),
+    diag,
   })
 
   /**
@@ -423,7 +335,7 @@ async function startBridgedVoice(h: VoiceHandlers): Promise<Voice> {
    * transcript arriving — and the transcript belongs to the mode the user is in
    * now, not the one they interrupted.
    */
-  const transcribe = async (blob: Blob) => {
+  const transcribe = async ({ blob, startedAt }: { blob: Blob; startedAt: number }) => {
     const mode = h.mode()
     if (mode === 'deaf') return
     const t0 = performance.now()
@@ -440,14 +352,21 @@ async function startBridgedVoice(h: VoiceHandlers): Promise<Voice> {
         drop(`transcription failed (${res.status})`)
         return
       }
-      const out = (await res.json()) as {
-        text?: string
-        /** Present when the bridge spotted the wake word itself (null: it didn't). */
-        wake?: { keyword: string; trailing: string } | null
-        reason?: string
-      }
+      const out = (await res.json()) as SttResult
       const said = (out.text ?? '').trim()
+      // A transcript no correction touched comes back without `raw`: then the
+      // words are the raw words.
+      const raw = (out.raw ?? said).trim()
       diag.lastError = out.reason ?? ''
+      diag.owner = out.owner?.verdict ?? ''
+      diag.heardBy = out.engine ?? ''
+      /** This segment, as the turn it starts or answers will carry it. */
+      const heard = (words: string): Heard => ({
+        raw: words,
+        utts: out.utt ? [out.utt] : [],
+        ...(out.owner?.verdict ? { owner: out.owner.verdict } : {}),
+        ...(out.engine ? { engine: out.engine } : {}),
+      })
 
       // The bridge's keyword spotter decides wakes when it has one: on-device,
       // and far harder to fool than a transcript. "Hey Jarvis" on its own comes
@@ -460,7 +379,7 @@ async function startBridgedVoice(h: VoiceHandlers): Promise<Voice> {
           diag.accepted++
           diag.heard = `[${out.wake.keyword}] ${out.wake.trailing}`
           diag.heardAt = Date.now()
-          h.onWake(out.wake.trailing)
+          h.onWake(out.wake.trailing, heard(out.raw?.trim() || out.wake.trailing))
         } else {
           drop(out.wake ? 'wake word repeated too soon' : 'no wake word')
         }
@@ -472,9 +391,22 @@ async function startBridgedVoice(h: VoiceHandlers): Promise<Voice> {
         return
       }
 
+      // A "shall I?" is open. Its answer is only what was said after the
+      // question had finished: anything that began earlier is the question
+      // coming back through the microphone, or words meant for something else.
+      // What clears that bar skips the echo check below (see answersQuestion).
+      const confirming = h.urgent?.() ?? false
+      if (
+        confirming &&
+        !answersQuestion(startedAt, { questionEnd: h.questionEnd?.() ?? 0, spokeUntil })
+      ) {
+        drop('began before the question had finished')
+        return
+      }
+
       // His own voice, come back through the microphone. The raised guard
       // threshold stops most of it at the door; this catches the rest.
-      if (isEcho(said, speakingNow())) {
+      if (!confirming && isEcho(said, speakingNow())) {
         drop('echo of his own voice')
         return
       }
@@ -488,23 +420,23 @@ async function startBridgedVoice(h: VoiceHandlers): Promise<Voice> {
           diag.wakes++
           diag.dropped = ''
           diag.accepted++
-          h.onWake(afterWake(said))
+          h.onWake(afterWake(said), heard(afterWake(raw)))
         } else {
           drop(`heard "${said.slice(-40)}" — not his name`)
         }
         return
       }
 
-      if (h.urgent?.()) {
+      if (confirming) {
         diag.dropped = ''
         diag.accepted++
-        h.onUtterance(said)
+        h.onUtterance(said, heard(raw))
         return
       }
 
       // Not a turn yet — a piece of one. The assembler decides when the thought
       // is finished, reading the words and whether the room is still noisy.
-      assemble.feed(said, vad?.meter().speaking ?? false)
+      assemble.feed(said, vad?.meter().speaking ?? false, { raw, utt: out.utt })
     } catch (err) {
       diag.restarts++
       diag.lastError = String(err)
@@ -546,11 +478,14 @@ async function startBridgedVoice(h: VoiceHandlers): Promise<Voice> {
         h.onSpeechStart()
       }
     },
-    onEnd: (blob) => {
-      pendingAudio.push(blob)
+    onEnd: (blob, _ms, startedAt) => {
+      pendingAudio.push({ blob, startedAt })
       void drain()
     },
     onLevel: (v) => {
+      // Sampled here because this runs on every audio frame, on the same clock
+      // and with the same delivery lag as a segment's start.
+      if (speakingSince()) spokeUntil = Date.now()
       // Only paint the live level while actually listening for a command, so a
       // dormant reactor stays calm and does not twitch at every room noise.
       const mode = h.mode()
@@ -628,13 +563,14 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
 
   /** Same assembly rules as the premium path — a pause is not a full stop. */
   const assemble = makeAssembler({
-    emit: (text) => {
+    emit: (text, heard) => {
       diag.dropped = ''
       diag.accepted++
       diag.holding = ''
-      h.onUtterance(text)
+      h.onUtterance(text, heard)
     },
     partial: (text) => h.onPartial(text),
+    diag,
   })
 
   const touch = () => {
@@ -672,7 +608,9 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
         diag.wakes++
         diag.dropped = ''
         diag.accepted++
-        h.onWake(afterWake(text))
+        // This recogniser has no bridge behind it: its words are all there is.
+        const trailing = afterWake(text)
+        h.onWake(trailing, { raw: trailing, utts: [] })
       } else {
         drop(`heard "${text.slice(-40)}" — not his name`)
       }
@@ -720,7 +658,7 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
         diag.wakes++
         const trailing = afterWake(heard)
         reset()
-        h.onWake(trailing)
+        h.onWake(trailing, { raw: trailing, utts: [] })
       } else if (settled.length > 400) {
         settled = ''
       }

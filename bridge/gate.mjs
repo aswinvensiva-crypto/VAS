@@ -122,7 +122,12 @@ export function createGate({ ask, cancel = () => {}, audit = defaultAudit, owner
       }
       if (reply?.cancelled) return { answer: 'cancelled', source: 'none' }
       const source = reply?.source === 'click' ? 'click' : 'voice'
-      const answer = source === 'click' ? (reply.approved ? 'yes' : 'no') : parseConfirm(reply?.text)
+      // The raw transcript, never the corrected text: a learned correction is a
+      // rewrite rule over everything said, and must not be able to turn a "nah"
+      // into a yes. `text` is only for a face too old to send `raw`.
+      const answer = source === 'click' ? (reply.approved ? 'yes' : 'no') : parseConfirm(reply?.raw ?? reply?.text)
+      // `owner` is the verdict the bridge looked up for this answer's own
+      // segments (heard.mjs judgedReply), not anything the face claimed.
       if (answer !== 'unclear') return { answer, source, owner: reply?.owner }
     }
     return { answer: 'unclear', source: 'voice' }
