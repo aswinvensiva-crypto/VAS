@@ -29,6 +29,7 @@ import { registry as NEURONS } from './neurons/registry.mjs'
 import { createLocal } from './neurons/local.mjs'
 import { neuronsServer } from './neurons/mcp.mjs'
 import { loadCorrections } from './corrections/store.mjs'
+import { createSettings } from './settings.mjs'
 import { dataDir } from './store/files.mjs'
 import { loadConfig, migrateOwnerRequirement } from './store/config.mjs'
 import { createVoiceEngine } from './voice/engine.mjs'
@@ -96,6 +97,19 @@ const VOICE = createVoiceEngine({ config: CONFIG })
  */
 const BRAIN = createBrain({ known: new Set(NEURONS.keys()) })
 const CORRECTIONS = await loadCorrections()
+
+/**
+ * The Settings drawer's endpoints (bridge/settings.mjs), and hand edits to
+ * config.json applied while running — both update CONFIG in place.
+ */
+const SETTINGS = createSettings({
+  config: CONFIG,
+  voice: VOICE,
+  corrections: CORRECTIONS,
+  brain: BRAIN,
+  speaker: () => SPEAKER,
+})
+SETTINGS.watch()
 
 /**
  * "Only respond to my voice": the enrolled voiceprint (null until you enroll),
@@ -569,7 +583,9 @@ const handleRequest = async (req, res) => {
   const cors = corsFor(req)
 
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, cors)
+    // DELETE is not a simple method, so the Settings drawer's removals are
+    // preflighted and need it named here.
+    res.writeHead(204, { ...cors, 'access-control-allow-methods': 'GET, POST, DELETE' })
     return res.end()
   }
 
@@ -894,6 +910,28 @@ const handleRequest = async (req, res) => {
     if (want.length) startModelDownload(want)
     res.writeHead(202, { ...cors, 'content-type': 'application/json' })
     return res.end(JSON.stringify({ started: want }))
+  }
+
+  // The Settings drawer: corrections, apps, routines, permissions and the
+  // general settings, read and changed here (bridge/settings.mjs).
+  if (pathname === '/settings' || pathname.startsWith('/settings/')) {
+    const chunks = []
+    let size = 0
+    for await (const chunk of req) {
+      chunks.push(chunk)
+      size += chunk.length
+      if (size > 64 * 1024) {
+        req.destroy()
+        res.writeHead(413, cors)
+        return res.end('body too large')
+      }
+    }
+    const out = (await SETTINGS.handle(req, pathname, Buffer.concat(chunks).toString('utf8'))) ?? [
+      404,
+      { ok: false, reason: 'no such setting' },
+    ]
+    res.writeHead(out[0], { ...cors, 'content-type': 'application/json', 'cache-control': 'no-store' })
+    return res.end(JSON.stringify(out[1]))
   }
 
   if (pathname.startsWith('/voice/')) {

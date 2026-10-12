@@ -78,6 +78,17 @@ export async function loadConfig() {
   return { ...cfg, userName: cfg.userName ?? accountName() }
 }
 
+/**
+ * The config as it is on disk right now, for applying a change while VAS
+ * runs. Unlike loadConfig, a broken file throws instead of reading as the
+ * defaults: half-way through a hand edit, the settings already in effect are
+ * a far better answer than a sudden reset to factory.
+ */
+export async function readConfigStrict() {
+  const cfg = ConfigSchema.parse((await readRawJson('config.json')) ?? {})
+  return { ...cfg, userName: cfg.userName ?? accountName() }
+}
+
 export async function saveConfig(cfg) {
   await writeJsonAtomic('config.json', ConfigSchema.parse(cfg))
 }
@@ -113,7 +124,7 @@ export async function updateConfig(patch) {
   const next = merge(isPlain(written) ? written : {}, patch)
   ConfigSchema.parse(next)
   await writeJsonAtomic('config.json', next)
-  return loadConfig()
+  return readConfigStrict()
 }
 
 /**
