@@ -30,7 +30,7 @@ import { createLocal } from './neurons/local.mjs'
 import { neuronsServer } from './neurons/mcp.mjs'
 import { loadCorrections } from './corrections/store.mjs'
 import { dataDir } from './store/files.mjs'
-import { loadConfig } from './store/config.mjs'
+import { loadConfig, migrateOwnerRequirement } from './store/config.mjs'
 import { createVoiceEngine } from './voice/engine.mjs'
 import { handleSegment } from './voice/stt.mjs'
 import { parseWav } from './voice/wav.mjs'
@@ -86,6 +86,7 @@ if (!TOKEN && !INSECURE_DEV) {
 }
 
 /** VAS settings (%APPDATA%\VAS\data\config.json), and the local voice engine. */
+await migrateOwnerRequirement()
 const CONFIG = await loadConfig()
 const VOICE = createVoiceEngine({ config: CONFIG })
 
@@ -1158,6 +1159,8 @@ wss.on('connection', (socket) => {
   const gate = createGate({
     ask,
     owner: voiceCheck,
+    // Read per question: CONFIG is updated in place when settings change.
+    requireOwner: () => CONFIG.owner.require,
     cancel: () => {
       for (const [id, slot] of waiting) {
         if (slot.kind !== 'confirm') continue

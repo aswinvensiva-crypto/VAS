@@ -51,19 +51,42 @@ export async function readJson(name, schema) {
 }
 
 /**
+ * One JSON file exactly as written, defaults not filled in: undefined when it
+ * does not exist yet. For changing a few settings without writing every
+ * default back into the user's file. A file that does not parse throws rather
+ * than reading as empty — saving over it would silently throw away whatever
+ * the user was in the middle of editing by hand.
+ */
+export async function readRawJson(name) {
+  try {
+    return JSON.parse(await readFile(join(dataDir(), name), 'utf8'))
+  } catch (err) {
+    if (err.code === 'ENOENT') return undefined
+    throw new Error(`${name} is not valid JSON (${err.message}) — fix or delete it first`)
+  }
+}
+
+/**
  * Write a file so it is never seen half-written: to a temp name first, then
  * renamed over the real one, which is atomic on the same volume.
  */
-export async function writeJsonAtomic(name, value) {
+export async function writeTextAtomic(name, text) {
   const path = join(dataDir(), name)
   const tmp = `${path}.${process.pid}.tmp`
-  await writeFile(tmp, JSON.stringify(value, null, 2) + '\n')
+  await writeFile(tmp, text)
   await rename(tmp, path)
+}
+
+export async function writeJsonAtomic(name, value) {
+  await writeTextAtomic(name, JSON.stringify(value, null, 2) + '\n')
 }
 
 /**
  * Call `onChange` when the named file is edited by hand, debounced because
  * editors save in several writes. Returns a function that stops watching.
+ *
+ * VAS's own atomic writes fire it too (the rename lands on the watched name),
+ * so whatever reloads here must be happy to read back what was just saved.
  */
 export function watchData(name, onChange, debounceMs = 200) {
   let timer = null
