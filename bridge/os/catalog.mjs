@@ -23,6 +23,12 @@ const execFileP = promisify(execFile)
 /** One day: the Start menu changes when something is installed, which is rare. */
 const DAY_MS = 24 * 60 * 60 * 1000
 
+/** How often a name nobody can find may send VAS back to the Start menu. */
+const MISS_MS = 10 * 60 * 1000
+
+/** How often the background upkeep looks at the cache's age. */
+const UPKEEP_MS = 60 * 60 * 1000
+
 /**
  * The only command this module ever runs. It is a constant on purpose: nothing
  * anybody says reaches it. OutputEncoding is forced to UTF-8 because Windows
@@ -199,4 +205,103 @@ export async function loadCatalog({ exec = defaultExec, cachePath, maxAgeMs = DA
     console.warn(`[jarvis] could not refresh the app catalog (${err.message}); using the saved one`)
     return { ...cached, stale: true }
   }
+}
+
+/**
+ * The catalog as the app neurons use it, kept fresh without anyone waiting.
+ *
+ * loadCatalog refreshes in the foreground, which put a 3.6 s PowerShell call
+ * inside whichever spoken command happened to find the cache a day old. Here
+ * a stale cache is answered from at once and re-read behind it; only a first
+ * run, with no cache at all, has to wait for Windows.
+ *
+ * A name that matches nothing may be an app installed since the last read,
+ * so `afterMiss` reads the Start menu again — but not if it was read in the
+ * last ten minutes, so a run of questions for Claude ("open the pod bay
+ * doors") costs one PowerShell call, not one each.
+ *
+ * @param {{ cachePath?: string | (() => string),
+ *           source?: () => Promise<ReturnType<typeof parseStartApps>>,
+ *           now?: () => number, maxAgeMs?: number, missEveryMs?: number,
+ *           log?: (message: string) => void }} [opts]
+ *   source: where the apps come from (Get-StartApps; tests pass a fake).
+ */
+export function createCatalog({
+  cachePath,
+  source = () => fetchStartApps(defaultExec),
+  now = Date.now,
+  maxAgeMs = DAY_MS,
+  missEveryMs = MISS_MS,
+  log = (m) => console.warn(`[jarvis] ${m}`),
+} = {}) {
+  const pathNow = () => (typeof cachePath === 'function' ? cachePath() : cachePath)
+  const isStale = (cat) => !(cat.fetchedAt <= now() && now() - cat.fetchedAt < maxAgeMs)
+  /** The read in flight, shared, so the timer, a miss and "refresh apps" never run two. */
+  let reading = null
+  /** When a miss last sent us to Windows, whether or not Windows answered. */
+  let missAt = -Infinity
+
+  /** Ask Windows, save, and return the new catalog. */
+  async function read() {
+    const catalog = { fetchedAt: now(), apps: await source() }
+    if (!catalog.apps.length) throw new Error('the Start menu listed no apps')
+    await writeCache(pathNow(), catalog)
+    return catalog
+  }
+
+  /** Read now, joining a read already in flight rather than starting another. */
+  function refresh() {
+    reading ??= read().finally(() => {
+      reading = null
+    })
+    return reading
+  }
+
+  /** The apps, now: the cache even when old (refreshed behind it), Windows only on a first run. */
+  async function get() {
+    const cached = await readCache(pathNow())
+    if (!cached) return refresh()
+    if (isStale(cached)) refresh().catch((err) => log(`could not refresh the app catalog (${err.message}); keeping the saved one`))
+    return cached
+  }
+
+  /**
+   * After a spoken name matched nothing: a newer catalog worth retrying
+   * against, or null when the Start menu was read too recently to have
+   * changed (or could not be read).
+   */
+  async function afterMiss() {
+    const cached = await readCache(pathNow())
+    const lastRead = Math.max(missAt, cached?.fetchedAt ?? -Infinity)
+    if (now() - lastRead < missEveryMs) return null
+    missAt = now()
+    try {
+      return await refresh()
+    } catch (err) {
+      log(`could not re-read the Start menu (${err.message})`)
+      return null
+    }
+  }
+
+  /**
+   * One look at the cache's age, refreshing it if it is a day old. A missing
+   * cache is left to the first command that needs it, so a bridge that is
+   * started and stopped (every test, a quick launch) never runs PowerShell
+   * for nothing.
+   */
+  async function upkeep() {
+    const cached = await readCache(pathNow())
+    if (!cached || !isStale(cached)) return
+    await refresh().catch((err) => log(`could not refresh the app catalog (${err.message}); keeping the saved one`))
+  }
+
+  /** Upkeep now and every hour after, until the returned function is called. */
+  function start(everyMs = UPKEEP_MS) {
+    void upkeep()
+    const timer = setInterval(() => void upkeep(), everyMs)
+    timer.unref?.()
+    return () => clearInterval(timer)
+  }
+
+  return { get, refresh, afterMiss, upkeep, start }
 }

@@ -28,6 +28,7 @@ import { createBrain } from './neurons/brain.mjs'
 import { registry as NEURONS } from './neurons/registry.mjs'
 import { createLocal } from './neurons/local.mjs'
 import { neuronsServer } from './neurons/mcp.mjs'
+import { keepCatalogFresh } from './neurons/lib/apps.mjs'
 import { loadCorrections } from './corrections/store.mjs'
 import { dataDir } from './store/files.mjs'
 import { loadConfig } from './store/config.mjs'
@@ -95,6 +96,8 @@ const VOICE = createVoiceEngine({ config: CONFIG })
  */
 const BRAIN = createBrain({ known: new Set(NEURONS.keys()) })
 const CORRECTIONS = await loadCorrections()
+/** The Start menu catalog, re-read in the background once it is a day old. */
+keepCatalogFresh()
 
 /**
  * "Only respond to my voice": the enrolled voiceprint (null until you enroll),

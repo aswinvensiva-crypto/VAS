@@ -41,6 +41,7 @@ import { env } from './config'
 import { BARE_NAME, LEADING_NAME } from './lib/wakeWords'
 import { desktop } from './lib/desktop'
 import type { ConfirmAnswer, ConfirmRequest } from './lib/bridge'
+import { watchNotice } from './lib/bridge'
 
 /**
  * The conversation.
@@ -475,6 +476,27 @@ export default function App() {
         store.getState().setEnrolling(true)
       }
     })
+
+    // Something to say outside any turn: an app that never showed up. Said
+    // once he is idle, so it never talks over an answer or a question; one
+    // that finds no quiet moment for half a minute goes on the error line.
+    const sayNotice = (text: string, waited = 0) => {
+      const s = store.getState()
+      const idle = (s.phase === 'dormant' || s.phase === 'listening') && !speaker.current
+      if (!idle) {
+        if (waited < 30) setTimeout(() => sayNotice(text, waited + 1), 1000)
+        else s.setError(text)
+        return
+      }
+      s.pushTurn({ id: newId(), role: 'jarvis', text })
+      const n = createSpeaker()
+      speaker.current = n
+      n.say(text)
+      void n.end().then(() => {
+        if (speaker.current === n) speaker.current = null
+      })
+    }
+    watchNotice((text) => sayNotice(text))
 
     /**
      * JARVIS asking to see something.

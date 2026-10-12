@@ -114,6 +114,13 @@ export function watchApp(fn: (op: string) => void) {
   onApp = fn
 }
 
+/** Something JARVIS has to say outside any turn — an app he said he was
+ *  opening that never appeared. The app decides when it can be said. */
+let onNotice: ((text: string) => void) | null = null
+export function watchNotice(fn: (text: string) => void) {
+  onNotice = fn
+}
+
 /** Blades arrive the same way panels do — pushed mid-turn, so the article is
  *  already open as he starts the sentence about it. */
 let onBlade: ((blade: Blade) => void) | null = null
@@ -255,6 +262,8 @@ function dispatch(ws: WebSocket) {
       }
     } else if (msg.type === 'app' && msg.op) {
       onApp?.(msg.op)
+    } else if (msg.type === 'notice' && msg.text) {
+      onNotice?.(msg.text)
     } else if (msg.type === 'confirm_cancel') {
       onConfirmCancel?.(msg.id ?? '*')
     } else if (msg.type === 'ui' && msg.op) {
