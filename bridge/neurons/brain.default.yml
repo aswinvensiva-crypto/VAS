@@ -11,6 +11,9 @@
 #   strict          the same words and no others, in any order
 #   ordered-strict  exactly these words, in this order
 #
+# A synapse marked `routine-only: true` is never matched against what you
+# say; it only lets a routine you teach use it as a step (see "say" below).
+#
 # Your own routines (taught by voice, or written by hand) live in
 # %APPDATA%\VAS\data\brain.yml and win over these when both fit.
 
@@ -187,6 +190,17 @@ synapses:
       - order: { text: "whenever i say {{spec}}", matching-type: ordered-strict }
     neurons:
       - teach: { spec: "{{spec}}" }
+
+  # A spoken line, as one step of a routine you teach ("when I say good
+  # morning, say rise and shine, then open Spotify"). Routine-only: said to
+  # JARVIS directly, "say something funny" is a question for Claude, not an
+  # order to repeat the words back.
+  - name: say
+    routine-only: true
+    signals:
+      - order: { text: "say {{message}}", matching-type: ordered-strict }
+    neurons:
+      - say: { message: "{{message}}" }
 
   - name: forget-routine
     signals:
