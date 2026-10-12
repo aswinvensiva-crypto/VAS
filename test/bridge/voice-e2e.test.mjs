@@ -53,6 +53,7 @@ test('"Hey Jarvis, open Spotify" wakes him and hands over the command', { skip }
   assert.equal(out.wake?.keyword, 'HEY_JARVIS')
   assert.match(out.wake.trailing, /^open spo/i)
   assert.equal(out.text, out.wake.trailing)
+  assert.match(out.utt, /^[\w-]{12}$/) // this segment's id in the utterance store
 })
 
 test('"Hey Jarvis" alone wakes him with nothing to do yet', { skip }, async () => {
