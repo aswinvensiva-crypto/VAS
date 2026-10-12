@@ -37,6 +37,7 @@ import { parseWav } from './voice/wav.mjs'
 import { scribeTranscribe } from './voice/scribe.mjs'
 import { loadSpeaker } from './voice/speaker.mjs'
 import { createEnrollment } from './voice/enroll.mjs'
+import { utterances } from './voice/utterances.mjs'
 import { fetchModels, MODELS, status as modelStatus } from './voice/models.mjs'
 import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, realpathSync } from 'node:fs'
@@ -136,6 +137,8 @@ function startModelDownload(names) {
 
 const ENROLL = createEnrollment({
   engine: VOICE,
+  // Finishing tunes the wake word to the voice: into CONFIG, live, and config.json.
+  config: CONFIG,
   onChange: () => {
     SPEAKER = loadSpeaker()
   },
@@ -833,11 +836,15 @@ const handleRequest = async (req, res) => {
     const audio = Buffer.concat(chunks)
 
     if (!type.includes('wav')) {
-      // A compressed segment from an older face: only Scribe can read it.
+      // A compressed segment from an older face: only Scribe can read it —
+      // and dormant audio never goes there, so a wake-mode one is refused.
+      if (mode === 'wake') return json(415, { text: '', reason: 'send 16 kHz WAV' })
       const key = elevenKey()
       if (!key) return json(415, { text: '', reason: 'send 16 kHz WAV' })
       try {
-        return json(200, { text: await scribeTranscribe(audio, type, key, CONFIG.stt.language), engine: 'scribe' })
+        const text = await scribeTranscribe(audio, type, key, CONFIG.stt.language)
+        const utt = utterances.put({ text, owner: SPEAKER ? 'unknown' : 'unenrolled', mode })
+        return json(200, { text, engine: 'scribe', utt })
       } catch (err) {
         return json(502, { text: '', reason: String(err?.message ?? err) })
       }
@@ -873,6 +880,16 @@ const handleRequest = async (req, res) => {
         out.text = CORRECTIONS.apply(out.text)
         if (out.wake) out.wake.trailing = out.text
       }
+      // An id for this segment, so whatever it becomes — an ask, a spoken yes —
+      // can be traced back to whose voice it was and what was really heard.
+      out.utt = utterances.put({
+        text: out.text,
+        raw: out.raw ?? out.text,
+        owner: out.owner?.verdict ?? (SPEAKER ? 'unknown' : 'unenrolled'),
+        score: out.owner?.score,
+        durationMs: Math.round(wav.samples.length / 16),
+        mode,
+      })
       return json(200, out)
     } catch (err) {
       console.error('[jarvis] transcription failed:', err)

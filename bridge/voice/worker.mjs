@@ -22,41 +22,72 @@ function engine(key, build) {
   return cache.get(key)
 }
 
+/**
+ * A keyword spotter for one keywords file. The file is read only here, so a
+ * new spotter is the only way to pick up different keywords (or different
+ * thresholds) — and building one takes the best part of a second.
+ */
+function spotter(modelDir, keywordsFile) {
+  return new sherpa.KeywordSpotter({
+    featConfig: { sampleRate: 16000, featureDim: 80 },
+    modelConfig: {
+      transducer: {
+        encoder: join(modelDir, 'encoder-epoch-13-avg-2-chunk-16-left-64.int8.onnx'),
+        decoder: join(modelDir, 'decoder-epoch-13-avg-2-chunk-16-left-64.onnx'),
+        joiner: join(modelDir, 'joiner-epoch-13-avg-2-chunk-16-left-64.int8.onnx'),
+      },
+      tokens: join(modelDir, 'tokens.txt'),
+      numThreads: 1,
+      provider: 'cpu',
+      debug: 0,
+    },
+    keywordsFile,
+  })
+}
+
+/**
+ * First keyword `kws` spots in the clip, or null. `start` and `end` are the
+ * times (seconds into the clip) the spotter stamped on its first and last
+ * phone — the last one lands at the end of the word, which is where the
+ * command after "Hey Jarvis" begins.
+ */
+function firstKeyword(kws, samples) {
+  const stream = kws.createStream()
+  stream.acceptWaveform({ sampleRate: 16000, samples })
+  // Tail padding flushes the last few frames through the streaming model.
+  stream.acceptWaveform({ sampleRate: 16000, samples: new Float32Array(16000 * 0.4) })
+  while (kws.isReady(stream)) {
+    kws.decode(stream)
+    const r = kws.getResult(stream)
+    if (r.keyword) {
+      // Phone times count from the stream's (re)start, which is the clip's start here.
+      const at = r.start_time ?? 0
+      const ts = Array.isArray(r.timestamps) ? r.timestamps : []
+      return { keyword: r.keyword, start: ts.length ? at + ts[0] : null, end: ts.length ? at + ts[ts.length - 1] : null }
+    }
+  }
+  return null
+}
+
 const ops = {
-  /** First keyword spotted in the clip, with where it ends, or null. */
+  /** The live spotter: first keyword in the clip, or null (see firstKeyword). */
   kws(samples, { modelDir, keywordsFile }) {
     const kws = engine(`kws|${modelDir}|${keywordsFile}`, () => {
-      // A new spotter is the only way to pick up an edited keywords file.
+      // An edited keywords file is a new spotter; the old one is dropped.
       for (const k of cache.keys()) if (k.startsWith('kws|')) cache.delete(k)
-      return new sherpa.KeywordSpotter({
-        featConfig: { sampleRate: 16000, featureDim: 80 },
-        modelConfig: {
-          transducer: {
-            encoder: join(modelDir, 'encoder-epoch-13-avg-2-chunk-16-left-64.int8.onnx'),
-            decoder: join(modelDir, 'decoder-epoch-13-avg-2-chunk-16-left-64.onnx'),
-            joiner: join(modelDir, 'joiner-epoch-13-avg-2-chunk-16-left-64.int8.onnx'),
-          },
-          tokens: join(modelDir, 'tokens.txt'),
-          numThreads: 1,
-          provider: 'cpu',
-          debug: 0,
-        },
-        keywordsFile,
-      })
+      return spotter(modelDir, keywordsFile)
     })
-    const stream = kws.createStream()
-    stream.acceptWaveform({ sampleRate: 16000, samples })
-    // Tail padding flushes the last few frames through the streaming model.
-    stream.acceptWaveform({ sampleRate: 16000, samples: new Float32Array(16000 * 0.4) })
-    while (kws.isReady(stream)) {
-      kws.decode(stream)
-      const r = kws.getResult(stream)
-      if (r.keyword) {
-        const ts = Array.isArray(r.timestamps) ? r.timestamps : []
-        return { keyword: r.keyword, start: r.start_time ?? 0, end: ts.length ? ts[ts.length - 1] : null }
-      }
-    }
-    return null
+    return firstKeyword(kws, samples)
+  },
+
+  /**
+   * Which of several clips a spotter built from `keywordsFile` wakes on — one
+   * setting of enrollment's sweep. Built for this call and not kept: each
+   * setting is tried once, on all its clips together.
+   */
+  kwsTrial(clips, { modelDir, keywordsFile }) {
+    const kws = spotter(modelDir, keywordsFile)
+    return clips.map((samples) => Boolean(firstKeyword(kws, samples)))
   },
 
   /** Whisper transcript of the clip. */
