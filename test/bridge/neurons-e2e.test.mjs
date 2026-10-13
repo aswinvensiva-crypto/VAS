@@ -3,13 +3,16 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 import { startBridge } from './helpers.mjs'
 
 /**
- * Neurons through a real bridge (fake SDK, real Start menu): local answers,
- * handing on to Claude, the permission gate's questions, corrections and
- * taught routines. Every app question is answered "no", so nothing on this
- * machine is ever opened or closed by the test.
+ * Neurons through a real bridge (fake SDK, and the Start menu read from
+ * test/fixtures/startapps.json rather than this machine's, so the same apps
+ * exist wherever it runs): local answers, handing on to Claude, the
+ * permission gate's questions, corrections and taught routines. Every app
+ * question is answered "no", so nothing on this machine is ever opened or
+ * closed by the test.
  */
 const WebSocket = createRequire(import.meta.url)('ws')
 const windows = process.platform === 'win32'
@@ -25,7 +28,9 @@ let holdNext = false
 const held = []
 
 before(async () => {
-  bridge = await startBridge()
+  bridge = await startBridge({
+    env: { JARVIS_STARTAPPS_FIXTURE: fileURLToPath(new URL('../fixtures/startapps.json', import.meta.url)) },
+  })
   ws = new WebSocket(`ws://127.0.0.1:${bridge.port}/ws`, ['vas.v1', `vas.token.${bridge.token}`], {
     headers: { origin: 'app://vas' },
   })

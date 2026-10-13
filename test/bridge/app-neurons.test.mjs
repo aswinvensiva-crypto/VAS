@@ -38,6 +38,18 @@ beforeEach(() => {
 
 const HOUR = 60 * 60 * 1000
 const tick = () => new Promise((r) => setTimeout(r, 30))
+/**
+ * Wait for something done behind an answer (a re-read, a launch check) by
+ * looking for its result, not for a fixed moment a busy machine — the full
+ * suite, a CI runner — can overrun.
+ */
+async function until(check, what = 'the background work', ms = 5000) {
+  for (const end = Date.now() + ms; Date.now() < end; ) {
+    if (check()) return
+    await new Promise((r) => setTimeout(r, 10))
+  }
+  assert.fail(`timed out waiting for ${what}`)
+}
 
 /** A Start menu that is whatever the test says, with a clock the test turns. */
 function fakeStartMenu(lists = [APPS]) {
@@ -162,7 +174,7 @@ test('a launch whose app never shows up is reported afterwards, as a notice', as
   const r = await run('open_app', { app: 'notepad' }, h.ctx)
   assert.equal(r.say, 'Opening Notepad.', 'said at once, not after the check')
   assert.deepEqual(h.sent, [])
-  await tick()
+  await until(() => h.sent.length > 0, 'the notice')
   assert.deepEqual(h.checked, [['Notepad']])
   assert.deepEqual(h.sent, [{ type: 'notice', text: "Notepad doesn't seem to have opened." }])
   assert.ok(h.audits.some((e) => e.kind === 'app' && e.ok === false && /not running/.test(e.reason)))
@@ -172,7 +184,8 @@ test('no notice when the app is running, when Windows cannot say, or when its pr
   for (const running of [true, null]) {
     const h = harness({ answers: ['yes'], running })
     await run('open_app', { app: 'notepad' }, h.ctx)
-    await tick()
+    await until(() => h.checked.length === 1, 'the launch check')
+    await tick() // room for a notice that must not come
     assert.equal(h.checked.length, 1)
     assert.deepEqual(h.sent, [], `isRunning -> ${running}`)
     rmSync(join(dir, 'apps.json'), { force: true })
@@ -245,7 +258,14 @@ test('catalog: a day-old cache answers at once and is re-read behind it', async 
   menu.clock.t += 25 * HOUR
   const old = await menu.catalog.get()
   assert.equal(old.apps.length, APPS.length, 'answered from the old cache')
-  await tick()
+  const cachedCount = () => {
+    try {
+      return JSON.parse(readFileSync(join(dir, 'apps-catalog.json'), 'utf8')).apps.length
+    } catch {
+      return -1 // being written
+    }
+  }
+  await until(() => menu.reads.length === 2 && cachedCount() === APPS.length + 1, 'the background re-read')
   assert.equal(menu.reads.length, 2, 're-read in the background')
   assert.equal(JSON.parse(readFileSync(join(dir, 'apps-catalog.json'), 'utf8')).apps.length, APPS.length + 1)
   assert.equal((await menu.catalog.get()).apps.length, APPS.length + 1)
@@ -260,7 +280,7 @@ test('catalog: upkeep refreshes a stale cache on start and leaves a fresh one al
   menu.clock.t += 25 * HOUR
   const stop = menu.catalog.start(60_000)
   try {
-    await tick()
+    await until(() => menu.reads.length === 2, 'the first upkeep')
     assert.equal(menu.reads.length, 2, 'start() looks at the cache straight away')
   } finally {
     stop()
@@ -288,8 +308,7 @@ test('catalog: one read at a time, and a failed background read keeps the old li
   fail = true
   t += 25 * HOUR
   assert.equal((await catalog.get()).apps.length, APPS.length)
-  await tick()
-  await tick()
+  await until(() => reads === 2 && logs.length > 0, 'the failed background read')
   assert.equal(reads, 2)
   assert.match(logs[0], /timed out/)
   assert.equal((await catalog.get()).apps.length, APPS.length)

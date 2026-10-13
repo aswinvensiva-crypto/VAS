@@ -226,9 +226,19 @@ export async function loadCatalog({ exec = defaultExec, cachePath, maxAgeMs = DA
  *           log?: (message: string) => void }} [opts]
  *   source: where the apps come from (Get-StartApps; tests pass a fake).
  */
+/**
+ * A saved Get-StartApps listing in place of the real Start menu, for tests
+ * that run a whole bridge: JARVIS_STARTAPPS_FIXTURE names the file, so what
+ * "open spotify" resolves to does not depend on what the machine running the
+ * tests has installed — a CI runner has no Spotify.
+ */
+const fixtureSource = (path) => async () => parseStartApps(JSON.parse(await readFile(path, 'utf8')))
+
 export function createCatalog({
   cachePath,
-  source = () => fetchStartApps(defaultExec),
+  source = process.env.JARVIS_STARTAPPS_FIXTURE
+    ? fixtureSource(process.env.JARVIS_STARTAPPS_FIXTURE)
+    : () => fetchStartApps(defaultExec),
   now = Date.now,
   maxAgeMs = DAY_MS,
   missEveryMs = MISS_MS,

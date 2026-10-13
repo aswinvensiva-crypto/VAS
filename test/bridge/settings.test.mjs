@@ -56,6 +56,10 @@ async function eventually(check, what) {
   throw new Error(`${what}: ${last?.message}`)
 }
 
+/** The audit log is appended behind the answer: wait for the entry, not a moment. */
+const audited = (match) =>
+  eventually(() => assert.ok(auditLines().some(match), 'no such audit entry'), 'audit entry')
+
 const auditLines = () =>
   existsSync(file('audit.log'))
     ? readFileSync(file('audit.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
@@ -112,7 +116,7 @@ test('general settings are saved, applied at once and audited', async () => {
   const health = await get('/health')
   assert.equal(health.user.name, 'Tony')
   assert.equal(health.speaker.require, 'actions')
-  assert.ok(auditLines().some((e) => e.kind === 'settings' && e.name === 'general' && e.args.userName === 'Tony'))
+  await audited((e) => e.kind === 'settings' && e.name === 'general' && e.args.userName === 'Tony')
 
   const cleared = await send('POST', '/settings/general', { tts: { voice: null } })
   assert.equal(cleared.body.settings.general.tts.voice, null)
@@ -152,7 +156,7 @@ test('corrections: added with the learning rules, removed, saved', async () => {
   assert.deepEqual(removed.body.settings.corrections, [])
   assert.deepEqual(readData('corrections.json'), [])
   assert.equal((await send('DELETE', '/settings/corrections', { heard: 'spot if i' })).status, 404)
-  assert.ok(auditLines().some((e) => e.name === 'correction.remove'))
+  await audited((e) => e.name === 'correction.remove')
 })
 
 test('apps: revoke an allowed app, add and remove an alias', async () => {
@@ -186,7 +190,7 @@ test('apps: revoke an allowed app, add and remove an alias', async () => {
 
   assert.equal((await send('DELETE', '/settings/apps/aliases', { alias: 'MY MUSIC' })).status, 200)
   assert.deepEqual(readData('apps.json').aliases, {})
-  assert.ok(auditLines().some((e) => e.name === 'app.revoke' && e.args.app === 'Spotify'))
+  await audited((e) => e.name === 'app.revoke' && e.args.app === 'Spotify')
 })
 
 test('routines: listed from brain.yml and deleted, keeping the rest of the file', async () => {
@@ -262,7 +266,7 @@ test('permissions: tiers, reset to default, lockdown', async () => {
 
   assert.equal((await send('POST', '/settings/permissions', { tiers: { 'launch.missiles': 'free' } })).status, 400)
   assert.equal((await send('POST', '/settings/permissions', { tiers: { 'app.close': 'sometimes' } })).status, 400)
-  assert.ok(auditLines().some((e) => e.kind === 'settings' && e.name === 'permissions' && e.args.lockdown === true))
+  await audited((e) => e.kind === 'settings' && e.name === 'permissions' && e.args.lockdown === true)
 })
 
 test('a hand edit to config.json applies without a restart; a broken one is ignored', async () => {
