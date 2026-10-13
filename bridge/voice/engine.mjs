@@ -69,10 +69,17 @@ export function createVoiceEngine({ config }) {
    * The file keeps its name, so each rebuild gets a new version number: the
    * worker keeps its spotter by (file, version), and a new version is what
    * makes it build one from the new file — wake tuning and hand edits apply
-   * at once rather than at the next start.
+   * at once rather than at the next start. Nothing is rebuilt when the wake
+   * keywords are what they were: any other settings change (a name, a
+   * language) also lands here, and a new spotter costs the best part of a
+   * second on the next "Hey Jarvis".
    */
   let keywordsVersion = 0
+  let builtFrom = null
   function refreshKeywords() {
+    const from = JSON.stringify([installed('kws'), config.wake.keywords])
+    if (from === builtFrom) return keywords
+    builtFrom = from
     keywordsVersion++
     if (!installed('kws')) return (keywords = null)
     const out = writeKeywordsFile(config.wake.keywords, modelPath('kws'), dataDir())

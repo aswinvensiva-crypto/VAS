@@ -165,6 +165,8 @@ const ENROLL = createEnrollment({
   onChange: () => {
     SPEAKER = loadSpeaker()
   },
+  // Forgetting or replacing the voice from the drawer follows the drawer's rule.
+  guard: (action, prompt) => SETTINGS.guard(action, prompt),
 })
 
 function tokenOk(presented) {

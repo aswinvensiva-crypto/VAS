@@ -1,10 +1,10 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import YAML from 'yaml'
 import { z } from 'zod'
 import { learnCorrection } from '../../corrections/learn.mjs'
 import { saveCorrections, validateCorrection } from '../../corrections/store.mjs'
-import { dataDir } from '../../store/files.mjs'
+import { dataDir, writeTextAtomic } from '../../store/files.mjs'
 import { USER_BRAIN } from '../brain.mjs'
 import { WAKE_PARTS, normalize, tokenize } from '../matcher.mjs'
 import { fill, route } from '../router.mjs'
@@ -338,7 +338,7 @@ async function saveRoutine({ trigger: given, steps }, ctx) {
   list.add(doc.createNode(synapse))
   doc.set('synapses', list)
   if (ctx.brain.problem?.(String(doc))) return { say: "That routine wouldn't load, so I haven't saved it.", stop: true }
-  writeFileSync(brainPath(), String(doc))
+  await writeTextAtomic(USER_BRAIN, String(doc))
   if (ctx.brain.reload() === false) return { say: `I wrote it, but ${USER_BRAIN} didn't load. It's in the log.`, stop: true }
   ctx.audit({ kind: 'teach', name: synapse.name, args: { trigger, steps: steps.map((s) => s.neuron) } })
   return { say: `Saved. Say "${trigger}" any time.` }
@@ -403,21 +403,29 @@ export const forget_routine = {
   tier: 'confirm',
   params: { name: z.string().min(1).max(100) },
   async run({ name }, ctx) {
-    const doc = readUserBrain()
-    const list = doc.get('synapses')
-    const items = list?.items ?? []
     const want = normalize(name).norm.join(' ')
-    const index = items.findIndex((item) => {
-      const signals = item.toJSON().signals ?? []
-      return signals.some((s) => normalize(typeof s.order === 'string' ? s.order : s.order.text).norm.join(' ') === want)
-    })
-    if (index < 0) return { say: `I don't have a routine called "${name}".` }
-    const broken = brokenBrain(doc, ctx.brain)
+    const indexIn = (doc) =>
+      (doc.get('synapses')?.items ?? []).findIndex((item) => {
+        const signals = item.toJSON().signals ?? []
+        return signals.some((s) => normalize(typeof s.order === 'string' ? s.order : s.order.text).norm.join(' ') === want)
+      })
+    const missing = { say: `I don't have a routine called "${name}".` }
+    const before = readUserBrain()
+    if (indexIn(before) < 0) return missing
+    const broken = brokenBrain(before, ctx.brain)
     if (broken) return broken
     const verdict = await ctx.gate.check('routine.forget', { prompt: `Forget the routine "${name}"?` })
     if (!verdict.allowed) return { say: verdict.reason }
-    list.delete(index)
-    writeFileSync(brainPath(), String(doc))
+    // Read again: while the question was open the file may have changed —
+    // a routine deleted in Settings, a hand edit — and writing the old copy
+    // back would undo it.
+    const doc = readUserBrain()
+    const index = indexIn(doc)
+    if (index < 0) return missing
+    const brokenNow = brokenBrain(doc, ctx.brain)
+    if (brokenNow) return brokenNow
+    doc.get('synapses').delete(index)
+    await writeTextAtomic(USER_BRAIN, String(doc))
     if (ctx.brain.reload() === false) return { say: `I took it out, but ${USER_BRAIN} didn't load. It's in the log.` }
     ctx.audit({ kind: 'teach', name: 'forget', args: { routine: name } })
     return { say: `Forgotten.` }

@@ -271,9 +271,12 @@ export default function App() {
 
   /** What the voice loop should do with what it hears, derived from phase. */
   const mode = (): VoiceMode => {
-    // The enrollment screen has the microphone; nothing said there is a command.
-    if (store.getState().enrolling) return 'deaf'
-    switch (store.getState().phase) {
+    const phase = store.getState().phase
+    // The enrollment screen has the microphone; nothing said there is a
+    // command — but a question from the gate is still answered (replacing a
+    // saved voice from there asks one).
+    if (store.getState().enrolling && phase !== 'confirming') return 'deaf'
+    switch (phase) {
       case 'offline':
       case 'boot':
         return 'deaf'
@@ -405,6 +408,9 @@ export default function App() {
       pendingConfirm.current?.finish({ source: 'voice', cancelled: true })
       const s = store.getState()
       const resumeTo = s.phase === 'confirming' ? 'thinking' : s.phase
+      // A question can also come between turns — a change made in Settings —
+      // with the listening window open; it closes when it would have.
+      const deadline = idleDeadline.current
       let settled = false
       const finish = (a: ConfirmAnswer) => {
         if (settled) return
@@ -414,7 +420,15 @@ export default function App() {
         confirmVoice.current = null
         pendingConfirm.current = null
         store.getState().setConfirm(null)
-        if (store.getState().phase === 'confirming') store.getState().setPhase(resumeTo)
+        if (store.getState().phase === 'confirming') {
+          store.getState().setPhase(resumeTo)
+          if (resumeTo === 'listening' || resumeTo === 'waking') {
+            // Asking cleared the idle timer; without it he would listen forever.
+            const left = deadline - Date.now()
+            if (left > 0) idleTimer.current = setTimeout(goDormant, left)
+            else goDormant()
+          }
+        }
         resolve(a)
       }
       const timer = setTimeout(() => finish({ source: 'voice', cancelled: true }), req.timeoutMs)

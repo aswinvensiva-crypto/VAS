@@ -70,10 +70,22 @@ export function siteUrl(spoken, sites = SITES) {
 
 const searchUrl = (q) => `https://www.google.com/search?q=${encodeURIComponent(q)}`
 
-/** The address a routine step would open, or null for a step that opens none. */
+/**
+ * Words that mean a web page rather than an app: "open github" goes to
+ * chrome_open (apps.mjs open_app), and stepUrl follows the same rule.
+ */
+export const SITE = /(\bdot com\b|\.com\b|\.org\b|\.in\b|\.io\b|\byoutube\b|\bgmail\b|\bgoogle (docs|drive|calendar|maps)\b|\bgithub\b)/i
+
+/**
+ * The address a routine step would open, or null for a step that opens none —
+ * routed the way the step will be when it runs, so an "open x dot com" that
+ * open_app hands to chrome_open counts too.
+ */
 export async function stepUrl({ neuron, params }) {
-  if (neuron === 'chrome_open') return siteUrl(String(params?.site ?? ''), await knownSites()) ?? searchUrl(String(params?.site ?? ''))
+  const site = async (spoken) => siteUrl(spoken, await knownSites()) ?? searchUrl(spoken)
+  if (neuron === 'chrome_open') return site(String(params?.site ?? ''))
   if (neuron === 'chrome_search') return searchUrl(String(params?.query ?? ''))
+  if (neuron === 'open_app' && SITE.test(String(params?.app ?? ''))) return site(String(params.app))
   return null
 }
 

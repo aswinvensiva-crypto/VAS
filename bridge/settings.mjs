@@ -151,6 +151,15 @@ export function createSettings({ config, voice, corrections, brain, speaker, gat
   const guarded = (p) => p.lockdown || !p.allowClickConfirm
 
   /**
+   * The same rule for the drawer's other doors — forgetting your voice, or
+   * replacing it with a new one (bridge/voice/enroll.mjs). Throws an error
+   * with an HTTP status when the change is refused.
+   */
+  async function guard(action, prompt) {
+    if (guarded(await loadPermissions())) await approved(action, prompt)
+  }
+
+  /**
    * Make a config the one in effect. In place, because the voice pipeline,
    * the gate and /health all hold this same object; then the voice engine
    * rebuilds what it derives from it (the wake-word file).
@@ -411,5 +420,5 @@ export function createSettings({ config, voice, corrections, brain, speaker, gat
     })
   }
 
-  return { handle, snapshot, watch }
+  return { handle, snapshot, watch, guard }
 }

@@ -5,6 +5,7 @@ import { resolveApp } from '../../os/resolve.mjs'
 import { closeApp, isRunning, launchApp, processNamesFor } from '../../os/launch.mjs'
 import { loadApps, saveApps } from '../../gate.mjs'
 import { dataDir } from '../../store/files.mjs'
+import { SITE } from './chrome.mjs'
 
 /**
  * Windows apps, by voice.
@@ -46,8 +47,6 @@ export async function catalog({ refresh = false } = {}) {
  */
 export const keepCatalogFresh = () => WINDOWS.catalog.start()
 
-/** Words that mean a web page rather than an app. */
-const SITE = /(\bdot com\b|\.com\b|\.org\b|\.in\b|\.io\b|\byoutube\b|\bgmail\b|\bgoogle (docs|drive|calendar|maps)\b|\bgithub\b)/i
 
 /**
  * The app a spoken name means, asking when two fit equally well.

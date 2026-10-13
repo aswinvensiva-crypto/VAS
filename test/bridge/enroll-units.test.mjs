@@ -138,3 +138,41 @@ test('a clip too short to say anything about a voice is refused', async () => {
   assert.equal(out.ok, false)
   assert.match(out.reason, /too short/)
 })
+
+test('forgetting or replacing a saved voice goes through the guard first', async () => {
+  // The tests above saved a voice.
+  assert.ok(existsSync(join(dir, 'speaker.json')))
+  const asked = []
+  const guard = async (action) => {
+    asked.push(action)
+    throw Object.assign(new Error('Only your voice can approve that.'), { status: 403 })
+  }
+  const handle = m.createEnrollment({ engine: fakeEngine(), onChange: () => {}, guard })
+  const [status, out] = await handle({ method: 'DELETE' }, '/voice/enroll', new URLSearchParams(), Buffer.alloc(0))
+  assert.equal(status, 403)
+  assert.match(out.reason, /Only your voice/)
+  assert.ok(existsSync(join(dir, 'speaker.json')), 'the voice is still there')
+
+  const c = client(handle)
+  for (let i = 0; i < 5; i++) await c.post(recording(1.2))
+  for (let i = 0; i < 2; i++) await c.post(recording(3))
+  const before = readFileSync(join(dir, 'speaker.json'), 'utf8')
+  const [finishStatus] = await handle({ method: 'POST' }, '/voice/enroll/finish', new URLSearchParams({ session: c.session }), Buffer.alloc(0))
+  assert.equal(finishStatus, 403)
+  assert.equal(readFileSync(join(dir, 'speaker.json'), 'utf8'), before, 'not replaced')
+  assert.deepEqual(asked, ['voice.forget', 'settings.weaken'])
+})
+
+test('a wake tuning that fails does not fail an enrollment already saved', async () => {
+  const engine = fakeEngine()
+  engine.spotTrial = async () => {
+    throw new Error('trial spotter failed')
+  }
+  const c = client(m.createEnrollment({ engine, config: m.ConfigSchema.parse({}), onChange: () => {} }))
+  for (let i = 0; i < 5; i++) await c.post(recording(1.2, { wake: i < 3 }))
+  for (let i = 0; i < 2; i++) await c.post(recording(3))
+  const done = await c.finish()
+  assert.equal(done.ok, true, JSON.stringify(done))
+  assert.equal(done.wake.tuned, false)
+  assert.match(done.wake.reason, /trial spotter failed/)
+})

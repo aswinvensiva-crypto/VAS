@@ -84,8 +84,27 @@ function wakeClip(engine, samples) {
  * @param {() => void} deps.onChange  the saved voice changed (enrolled or forgotten)
  * @param {{ wake: { keywords: object[] } } | null} [deps.config]
  *   the bridge's live settings, whose wake word finishing tunes; without them it is left alone
+ * @param {(action: string, prompt: string) => Promise<void>} [deps.guard]
+ *   puts forgetting or replacing the voiceprint to the permission gate while
+ *   the owner has asked for more than a click (settings.mjs guard); throws
+ *   an error with an HTTP status to refuse
  */
-export function createEnrollment({ engine, onChange, config = null }) {
+export function createEnrollment({ engine, onChange, config = null, guard = async () => {} }) {
+  /**
+   * The voiceprint is what makes "only my voice" mean anything: with none,
+   * every yes counts. So the drawer's Forget and Learn-again buttons are
+   * safeguards coming off, and go through the same rule as the rest of it.
+   */
+  const refused = async (action, prompt) => {
+    try {
+      await guard(action, prompt)
+      return null
+    } catch (err) {
+      if (err?.status) return [err.status, { ok: false, reason: err.message }]
+      throw err
+    }
+  }
+
   return async function handle(req, pathname, query, body) {
     if (pathname === '/voice/status' && req.method === 'GET') {
       const s = loadSpeaker()
@@ -95,6 +114,8 @@ export function createEnrollment({ engine, onChange, config = null }) {
       return [200, { prompts: PROMPTS, need: { short: MIN_SHORT, long: MIN_LONG }, shortSeconds: SHORT_SECONDS }]
     }
     if (pathname === '/voice/enroll' && req.method === 'DELETE') {
+      const no = loadSpeaker() ? await refused('voice.forget', 'Forget your voice?') : null
+      if (no) return no
       forgetSpeaker()
       onChange()
       return [200, { ok: true }]
@@ -135,11 +156,22 @@ export function createEnrollment({ engine, onChange, config = null }) {
           },
         ]
       }
+      // Replacing a voice is judged by the voice being replaced.
+      const no = loadSpeaker() ? await refused('settings.weaken', 'Replace your saved voice with this one?') : null
+      if (no) return no
       sessions.delete(id)
       const saved = await saveSpeaker({ model: MODELS.speaker.file, clips })
       onChange()
       const said = (await Promise.all(clips.map((c) => c.wake))).filter(Boolean)
-      const wake = config ? await tuneWake({ clips: said, engine, config }) : { tuned: false, reason: 'no settings to tune', clips: said.length }
+      let wake
+      try {
+        wake = config ? await tuneWake({ clips: said, engine, config }) : { tuned: false, reason: 'no settings to tune', clips: said.length }
+      } catch (err) {
+        // Best effort: the voice is saved, and a wake word left as it was is
+        // no reason to tell the user enrolling failed.
+        console.warn(`[jarvis] wake word not tuned: ${err?.message ?? err}`)
+        wake = { tuned: false, reason: String(err?.message ?? err), clips: said.length }
+      }
       return [200, { ok: true, clips: saved.clips, thresholds: saved.thresholds, wake }]
     }
     if (pathname === '/voice/test' && req.method === 'POST') {

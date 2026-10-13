@@ -1904,7 +1904,9 @@ kbd {
   left: 50%;
   bottom: 18%;
   transform: translateX(-50%);
-  z-index: 40;
+  /* Above everything, the enrollment screen (50) included: replacing your
+     voice from there asks this question too. */
+  z-index: 60;
   max-width: min(560px, calc(100vw - 32px));
   padding: 16px 20px;
   border: 1px solid rgba(255, 201, 51, 0.55);
