@@ -56,3 +56,65 @@ test('back-to-back questions to Claude each get their own answer, in order', asy
   assert.ok(order.lastIndexOf('first') < order.indexOf('second'), order.join(','))
   assert.ok(frames.every((f) => f.ask === 'first' || f.ask === 'second'), 'no untagged frames')
 })
+
+/** Open a face socket and ask `text`, resolving with that question's frames once it is answered. */
+async function askOnce(ws, text, id) {
+  return new Promise((resolve, reject) => {
+    const frames = []
+    const timer = setTimeout(() => reject(new Error(`timed out; frames: ${JSON.stringify(frames)}`)), 15_000)
+    const on = (raw) => {
+      const m = JSON.parse(raw.toString())
+      if (m.ask !== id) return
+      frames.push(m)
+      if (m.type === 'done' || m.type === 'error') {
+        clearTimeout(timer)
+        ws.off('message', on)
+        resolve(frames)
+      }
+    }
+    ws.on('message', on)
+    ws.send(JSON.stringify({ type: 'ask', text, id }))
+  })
+}
+
+const openFace = async () => {
+  const ws = new WebSocket(`ws://127.0.0.1:${bridge.port}/ws`, ['vas.v1', `vas.token.${bridge.token}`], {
+    headers: { origin: 'app://vas' },
+  })
+  await new Promise((r) => ws.once('open', r))
+  return ws
+}
+
+test('a PC where Claude is not signed in gets a spoken sentence that says what to do', async () => {
+  const ws = await openFace()
+  try {
+    const frames = await askOnce(ws, 'tell me a joke fake:not-logged-in', 'nl')
+    const said = frames.filter((f) => f.type === 'text').map((f) => f.delta).join('')
+    // Spoken, because it arrives as words and not only on the done frame.
+    assert.match(said, /isn't signed in on this PC/)
+    assert.doesNotMatch(said, /\/login/)
+    assert.equal(frames.at(-1).type, 'done')
+  } finally {
+    ws.close()
+  }
+})
+
+test('a Claude session that dies answers the waiting question and the next one starts afresh, on the same socket', async () => {
+  const ws = await openFace()
+  let closed = false
+  ws.on('close', () => (closed = true))
+  try {
+    const crash = await askOnce(ws, 'tell me a joke fake:crash', 'boom')
+    assert.equal(crash.at(-1).type, 'error')
+    assert.match(crash.at(-1).message, /Claude stopped unexpectedly/)
+    // Not closed: a face that reconnected would start a session that crashed
+    // again, every few seconds, for as long as VAS was open.
+    await new Promise((r) => setTimeout(r, 300))
+    assert.equal(closed, false, 'the socket stays open')
+    const next = await askOnce(ws, 'tell me about the moon', 'again')
+    assert.match(next.filter((f) => f.type === 'text').map((f) => f.delta).join(''), /about the moon/)
+    assert.equal(next.at(-1).type, 'done')
+  } finally {
+    ws.close()
+  }
+})

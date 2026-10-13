@@ -14,6 +14,11 @@ import { writeFileSync } from 'node:fs'
  * JARVIS_FAKE_SDK_DELAY_MS pauses mid-answer, the way a real turn spends
  * seconds between its first and last words, so tests can land a second
  * question while the first is still being answered.
+ *
+ * Two questions act out a PC where Claude cannot answer: one containing
+ * "fake:not-logged-in" gets Claude Code's whole-message "Not logged in"
+ * result with nothing streamed, and "fake:crash" ends the session the way a
+ * claude.exe that dies does.
  */
 const DELAY_MS = Number(process.env.JARVIS_FAKE_SDK_DELAY_MS) || 0
 function describe(options) {
@@ -39,6 +44,11 @@ export function query({ prompt, options }) {
     for await (const m of prompt) {
       const content = m?.message?.content
       const text = typeof content === 'string' ? content : JSON.stringify(content)
+      if (text.includes('fake:not-logged-in')) {
+        yield { type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login', total_cost_usd: 0 }
+        continue
+      }
+      if (text.includes('fake:crash')) throw new Error('Claude Code process exited with code 1')
       yield {
         type: 'stream_event',
         event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'echo: ' } },

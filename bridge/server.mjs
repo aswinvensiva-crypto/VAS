@@ -22,6 +22,7 @@ import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer, createTaint } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { addressesIn, createPolicy, foreignMcp, sessionTools } from './policy.mjs'
+import { plainFailure, sessionTrouble } from './trouble.mjs'
 import { createGate } from './gate.mjs'
 import { buildSystemPrompt } from './persona.mjs'
 import { createBrain } from './neurons/brain.mjs'
@@ -1506,9 +1507,12 @@ wss.on('connection', (socket) => {
     })
 
     // Pump the session's output stream to the browser for as long as it lives.
+    const live = session
+    // Whether the turn in flight has streamed any words yet (see 'result').
+    let streamed = false
     ;(async () => {
       try {
-        for await (const msg of session) {
+        for await (const msg of live) {
           if (process.env.JARVIS_DEBUG === '1') {
             console.log('[msg]', msg.type, msg.event?.type ?? '')
           }
@@ -1526,6 +1530,7 @@ wss.on('connection', (socket) => {
                 ev.delta?.type === 'text_delta' &&
                 ev.delta.text
               ) {
+                streamed = true
                 sendTurn({ type: 'text', delta: ev.delta.text })
               }
               if (
@@ -1569,9 +1574,14 @@ wss.on('connection', (socket) => {
               // nothing to say — the HUD stops spinning and JARVIS stands there
               // silent. Say what happened instead.
               if (msg.subtype === 'success') {
+                // An answer that arrives whole, with nothing streamed — which
+                // is how Claude Code reports "not signed in" — would otherwise
+                // be silent: the face speaks the streamed words, not this text.
+                const said = plainFailure(msg.result) ?? msg.result ?? ''
+                if (!streamed && said) sendTurn({ type: 'text', delta: said })
                 sendTurn({
                   type: 'done',
-                  text: msg.result ?? '',
+                  text: said,
                   costUsd: msg.total_cost_usd ?? null,
                 })
               } else {
@@ -1590,6 +1600,7 @@ wss.on('connection', (socket) => {
               finishTurn?.()
               finishTurn = null
               taint.endTurn()
+              streamed = false
               // One turn's tool ids are never referred to again, and these
               // otherwise grow for as long as the socket is open.
               seenTools.clear()
@@ -1610,16 +1621,28 @@ wss.on('connection', (socket) => {
           }
         }
       } catch (err) {
+        if (closed) return // the face went first; this is just the session being torn down
         console.error('[jarvis] session error:', err)
-        send({ type: 'error', message: String(err?.message ?? err) })
-        // The stream is finished either way — nothing will ever be read from it
-        // again. Leaving the socket open would leave the client believing it has
-        // a working bridge, and every later question would hang for ever waiting
-        // on a pump that has already stopped. Close it so it reconnects.
-        closed = true
-        deliver?.(null)
-        session.close?.()
-        socket.close()
+        // Every question still waiting on this session is answered, in words
+        // that say what to do...
+        const reason = sessionTrouble(err)
+        if (!turnIds.length) send({ type: 'error', message: reason })
+        while (turnIds.length) {
+          sendTurn({ type: 'error', message: reason })
+          turnIds.shift()
+        }
+        finishTurn?.()
+        finishTurn = null
+        // ...and the next one starts a fresh session. The socket stays open:
+        // closing it made the face reconnect, the new connection start another
+        // session, and a claude.exe that cannot start crash, close and
+        // reconnect every few seconds for as long as VAS was open.
+        if (session === live) session = null
+        const stale = deliver
+        deliver = null
+        stale?.(null)
+        inbox.length = 0
+        live.close?.()
       }
     })()
   }

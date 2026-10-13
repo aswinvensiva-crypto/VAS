@@ -8,15 +8,19 @@
  * no human: it starts hidden, listens on loopback only, refuses a request
  * without the session token, answers a local order quickly, does not start
  * Chrome, and leaves no process behind - neither after a normal quit nor after
- * the main process is killed outright (the bridge's watchdog).
+ * the main process is killed outright (the bridge's watchdog). A last run
+ * starts it as on a fresh computer — no saved data, no voice models, no
+ * Claude sign-in — and checks it starts, says what is missing, and answers a
+ * question meant for Claude with a sentence that says what to do.
  *
  * It drives the window over the Chrome DevTools protocol on a loopback port,
  * so it never needs a click. Speech is not involved: the voice pipeline has
  * its own tests.
  */
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { createServer } from 'node:net'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
@@ -105,9 +109,12 @@ async function devtools(port) {
   return { url: page.url, evaluate, close: () => ws.terminate() }
 }
 
-async function launch() {
+/** `extraEnv` entries set to undefined are removed from the app's environment. */
+async function launch(extraEnv = {}) {
   const port = await freePort()
-  const child = spawn(EXE, ['--hidden', `--remote-debugging-port=${port}`], { detached: true, stdio: 'ignore' })
+  const env = { ...process.env, ...extraEnv }
+  for (const [k, v] of Object.entries(extraEnv)) if (v === undefined) delete env[k]
+  const child = spawn(EXE, ['--hidden', `--remote-debugging-port=${port}`], { detached: true, stdio: 'ignore', env })
   child.unref()
   const dt = await waitFor(() => devtools(port), 60_000, 'the VAS window')
   // The face boots, probes the bridge and connects before it is useful.
@@ -173,6 +180,50 @@ async function main() {
     } catch {
       /* already gone */
     }
+  }
+
+  // --- run 3: a fresh computer -----------------------------------------------
+  const fresh = mkdtempSync(join(tmpdir(), 'vas-e2e-fresh-'))
+  ;({ dt } = await launch({
+    JARVIS_DATA_DIR: join(fresh, 'data'),
+    JARVIS_MODELS_DIR: join(fresh, 'models'),
+    CLAUDE_CONFIG_DIR: join(fresh, 'claude'),
+    ANTHROPIC_API_KEY: undefined,
+  }))
+  const health = JSON.parse((await dt.evaluate(`fetch(window.vas.bridge.http + '/health').then((r) => r.text())`)) ?? 'null')
+  check(
+    'starts on a fresh computer and knows the voice models are missing',
+    Boolean(health?.ok && health.modelsMissing?.length),
+    health ? `missing: ${health.modelsMissing.join(', ')}` : 'no /health',
+  )
+  const reply = JSON.parse(
+    (await dt.evaluate(`new Promise((resolve) => {
+      const b = window.vas.bridge
+      const ws = new WebSocket(b.ws, ['vas.v1', 'vas.token.' + b.token])
+      let said = ''
+      ws.onopen = () => ws.send(JSON.stringify({ type: 'ask', text: 'tell me something fun about octopuses', id: 'e2e-fresh' }))
+      ws.onmessage = (e) => {
+        const m = JSON.parse(e.data)
+        if (m.ask !== 'e2e-fresh') return
+        if (m.type === 'text') said += m.delta
+        if (m.type === 'done' || m.type === 'error') { ws.close(); resolve(JSON.stringify({ type: m.type, said, message: m.message ?? '' })) }
+      }
+      setTimeout(() => resolve(JSON.stringify({ type: 'timeout', said })), 90000)
+    })`)) ?? 'null',
+  )
+  check(
+    'with no Claude sign-in, a question gets a spoken sentence that says what to do',
+    Boolean(reply && reply.type === 'done' && /signed in/.test(reply.said)),
+    reply ? `${reply.type}: "${(reply.said || reply.message).slice(0, 90)}"` : 'no answer',
+  )
+  await dt.evaluate('window.vas.quit()')
+  dt.close()
+  const leftFresh = await waitFor(async () => (appProcesses().length === 0 ? [] : null), 15_000, 'a clean exit').catch(() => appProcesses())
+  check('the fresh start quits cleanly too', leftFresh.length === 0, leftFresh.map((p) => `${p.name}:${p.pid}`).join(' '))
+  try {
+    rmSync(fresh, { recursive: true, force: true })
+  } catch {
+    /* a file still held for a moment; it is in the temp folder */
   }
 
   const failed = results.filter((r) => !r.ok)

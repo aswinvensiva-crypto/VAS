@@ -194,6 +194,21 @@ confirm with your real voice, another person or a phone recording being
 refused, mixed-language accuracy on your speech, a Chrome action in your
 signed-in browser, and Scribe with a real ElevenLabs key.
 
+### CI and code review
+
+Every push to `main` and every pull request runs `.github/workflows/ci.yml` on
+Windows: lint, the tests, the typecheck and build, then the installer is built
+and `npm run e2e:app` starts the packaged app on it. The runner is a fresh
+machine with no Claude sign-in and no voice models, so it also proves VAS
+starts cleanly there and says what is missing instead of failing. The
+installer is kept as the run's artifact for two weeks.
+
+[CodeRabbit](https://www.coderabbit.ai) reviews pull requests using
+`.coderabbit.yaml` once its GitHub App is installed for this repository
+(app.coderabbit.ai → repository settings). It reads the CI results, so a red
+check is explained in the review. It is free for public repositories; a
+private one needs a paid plan after a 14-day trial.
+
 ---
 
 ## jarvis-main: the original project

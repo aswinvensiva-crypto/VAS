@@ -1,0 +1,124 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# CodeRabbit reviews pull requests on this repository once its GitHub App is
+# installed for it (app.coderabbit.ai, repository settings). This file only
+# tells it what matters here; on its own it does nothing.
+#
+# It reads the CI results (.github/workflows/ci.yml) as part of each review
+# (reviews.tools.github-checks), so a failing test or a failed installer build
+# is explained in the review rather than left as a red cross.
+language: en-US
+
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - "^main$"
+
+  # Built or generated, not written: nothing to review.
+  path_filters:
+    - "!release/**"
+    - "!dist/**"
+    - "!node_modules/**"
+    - "!graphify-out/**"
+    - "!package-lock.json"
+    - "!public/mediapipe/**"
+    - "!public/wasm/**"
+
+  path_instructions:
+    - path: "bridge/**/*.mjs"
+      instructions: |
+        The bridge is VAS's local Node server: it hears the user (bridge/voice), runs
+        neurons (bridge/neurons), drives the user's own signed-in Chrome
+        (bridge/chrome.mjs) and hands open questions to Claude through the Agent SDK
+        (bridge/server.mjs). It listens on 127.0.0.1 with a per-launch token.
+        Treat it as security-critical and flag:
+        - an HTTP route or WebSocket message that changes state without tokenOk and
+          the origin check, or a Settings change that loosens a safeguard without
+          the guard in bridge/settings.mjs;
+        - anything JARVIS can do (a neuron, an MCP tool, a route) that skips the
+          permission gate (gate.check in bridge/gate.mjs), or reads Chrome without
+          the chrome.read tier;
+        - anything that sends an address off the machine (navigate, probe, a
+          remote image, a routine step, a configured MCP tool) without the taint
+          rule (taint.leave in bridge/chrome.mjs) once a page has been read;
+        - page text or another person's voice being treated as the user's words
+          (heard.mjs, judgedReply, fromOtherVoice, owner.require);
+        - spawn/execFile with shell:true or with a command built from speech or
+          page text; paths built from request input;
+        - transcripts, page text or secrets written to logs or audit.log;
+        - files under %APPDATA%\VAS written non-atomically.
+    - path: "bridge/chrome.mjs"
+      instructions: |
+        destination() and navTarget() decide what counts as leaving the machine.
+        Any address form the extension would open (no scheme, a leading slash,
+        userinfo, odd dots, the bridge's own /img|/media|/page proxies) must be
+        judged as where it really goes. Tool replies must not carry page-written
+        titles or full URLs back to the model unless the tool is a read that notes
+        the host (reading()).
+    - path: "electron/**"
+      instructions: |
+        The desktop shell. Check contextIsolation and sandbox stay on, the token
+        header is injected only for the bridge's own origin, the app:// protocol
+        handler cannot escape dist/, nothing remote is loaded into the window, and
+        the bridge is torn down on quit and by its watchdog if this process dies.
+    - path: "src/**/*.{ts,tsx}"
+      instructions: |
+        The face (React 19, Zustand). Check effect cleanups, stale closures and
+        state written after unmount; the confirm flow (a question can come from a
+        turn or from Settings, and a spoken yes must never be taken as a
+        barge-in); keyboard handling in the Settings drawer; and that it still
+        works in browser debug mode, where window.vas is absent.
+    - path: "test/**"
+      instructions: |
+        Tests must not touch the real %APPDATA%\VAS, the network or a real Claude
+        session: temp data dirs (JARVIS_DATA_DIR), the fake SDK
+        (JARVIS_FAKE_SDK=1) and ephemeral ports. Flag a test that only passes
+        because of a fixture that hides a real mismatch.
+    - path: "scripts/e2e-app.mjs"
+      instructions: |
+        The end-to-end check of the packaged app, run locally and in CI on a fresh
+        Windows runner. It must clean up every process it starts.
+    - path: ".github/workflows/**"
+      instructions: |
+        Windows runners. Least-privilege permissions, no secrets exposed to
+        pull_request runs from forks, actions pinned to a major version, nothing
+        published from CI.
+
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    custom_checks:
+      - name: "Permission gate"
+        mode: warning
+        instructions: |
+          Fail if the change adds something JARVIS can do — a neuron, an MCP tool,
+          an HTTP route or socket message that changes state — that does not go
+          through the permission gate (gate.check), or that sends an address off
+          the machine after a page read without the taint rule (taint.leave).
+      - name: "Tests"
+        mode: warning
+        instructions: |
+          Fail if behaviour in bridge/, electron/ or src/ changes without a test
+          under test/ (or a check in scripts/e2e-app.mjs) that covers it.
+
+  tools:
+    github-checks:
+      enabled: true
+    actionlint:
+      enabled: true
+    gitleaks:
+      enabled: true
+    yamllint:
+      enabled: true
+    markdownlint:
+      enabled: true
+    shellcheck:
+      enabled: true
+
+chat:
+  auto_reply: true

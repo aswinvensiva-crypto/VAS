@@ -1,0 +1,98 @@
+# VAS is a Windows desktop app, so everything runs on Windows: the bridge's
+# tests use named pipes and PowerShell, and the installer is an NSIS .exe.
+#
+#   Checks     lint, the bridge and renderer tests, the typecheck, the build
+#   Installer  builds "VAS Setup x.y.z.exe", then starts the packaged app and
+#              runs the end-to-end check on it (scripts/e2e-app.mjs) — the
+#              runner is a fresh Windows machine with no Claude sign-in and no
+#              voice models, which is exactly what that check's last run covers.
+#
+# CodeRabbit reads these results on pull requests (.coderabbit.yaml,
+# reviews.tools.github-checks) and explains a failing check in its review.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Checks
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Tests
+        run: npm test
+
+      - name: Typecheck and build
+        run: npm run build
+
+  installer:
+    name: Installer
+    needs: checks
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build the installer
+        # No code-signing certificate here, and nothing is published: the
+        # installer is kept as this run's artifact.
+        run: npm run dist -- --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: End-to-end check of the packaged app
+        run: npm run e2e:app
+
+      - name: Keep the installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: VAS-installer
+          path: release/VAS Setup *.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Collect the app's log
+        if: failure()
+        shell: pwsh
+        run: Copy-Item "$env:APPDATA\VAS\data\bridge.log" vas-bridge.log -ErrorAction SilentlyContinue
+
+      - name: Keep the app's log if anything failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vas-logs
+          path: vas-bridge.log
+          if-no-files-found: ignore
+          retention-days: 7
