@@ -28,7 +28,7 @@ export type SettingsSnapshot = {
   permissions: {
     lockdown: boolean
     allowClickConfirm: boolean
-    actions: Array<{ action: string; label: string; tier: Tier; default: Tier }>
+    actions: Array<{ action: string; label: string; tier: Tier; default: Tier; alwaysAsks?: boolean }>
   }
   voice: { available: boolean; enrolled: boolean; clips: number; enrolledAt: string | null }
 }

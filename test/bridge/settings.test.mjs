@@ -78,7 +78,8 @@ test('GET /settings returns every section', async () => {
   assert.deepEqual(s.routines, [])
   assert.equal(s.permissions.lockdown, false)
   const close = s.permissions.actions.find((a) => a.action === 'app.close')
-  assert.deepEqual(close, { action: 'app.close', label: 'Close an app', tier: 'confirm', default: 'confirm' })
+  assert.deepEqual(close, { action: 'app.close', label: 'Close an app', tier: 'confirm', default: 'confirm', alwaysAsks: false })
+  assert.equal(s.permissions.actions.find((a) => a.action === 'jarvis.unlock').alwaysAsks, true)
   assert.equal(s.voice.enrolled, false)
 })
 
@@ -372,4 +373,20 @@ test('every action on the Permissions tab is named in words, not by its key', as
   const unnamed = s.permissions.actions.filter((a) => a.label === a.action).map((a) => a.action)
   assert.deepEqual(unnamed, [])
   assert.ok(s.permissions.actions.some((a) => a.action === 'chrome.leave'))
+})
+
+test('the safeguards themselves can be set to never, but not to "just do it"', async () => {
+  // Unguarded (an earlier test leaves a lockdown on), so only the floor decides.
+  writeFileSync(file('permissions.json'), '{}')
+  for (const action of ['jarvis.unlock', 'settings.weaken', 'voice.forget']) {
+    for (const tier of ['free', 'remember']) {
+      const r = await send('POST', '/settings/permissions', { tiers: { [action]: tier } })
+      assert.equal(r.status, 400, `${action} -> ${tier}`)
+      assert.match(r.body.reason, /always asks/)
+    }
+  }
+  assert.equal(readData('permissions.json').tiers?.['jarvis.unlock'], undefined)
+  const never = await send('POST', '/settings/permissions', { tiers: { 'voice.forget': 'deny' } })
+  assert.equal(never.status, 200)
+  assert.equal((await send('POST', '/settings/permissions', { tiers: { 'voice.forget': null } })).status, 200)
 })

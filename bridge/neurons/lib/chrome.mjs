@@ -70,6 +70,14 @@ export function siteUrl(spoken, sites = SITES) {
 
 const searchUrl = (q) => `https://www.google.com/search?q=${encodeURIComponent(q)}`
 
+const hostOf = (url) => {
+  try {
+    return new URL(url).host.replace(/^www\./, '')
+  } catch {
+    return null
+  }
+}
+
 /**
  * Words that mean a web page rather than an app: "open github" goes to
  * chrome_open (apps.mjs open_app), and stepUrl follows the same rule.
@@ -111,7 +119,8 @@ export const chrome_open = {
       const leaving = await ctx.taint.leave(url, 'Go to')
       if (!leaving.allowed) return { say: leaving.reason, stop: true }
     }
-    const verdict = await ctx.gate.check('chrome.navigate', { prompt: `Open ${site}?`, args: { url } })
+    // The site only: the audit log is not a second copy of what was said.
+    const verdict = await ctx.gate.check('chrome.navigate', { prompt: `Open ${site}?`, args: { to: hostOf(url) } })
     if (!verdict.allowed) return { say: verdict.reason }
     try {
       await ctx.chrome.open(url)
@@ -135,7 +144,7 @@ export const chrome_search = {
       const leaving = await ctx.taint.leave(searchUrl(query), 'Look up')
       if (!leaving.allowed) return { say: leaving.reason, stop: true }
     }
-    const verdict = await ctx.gate.check('chrome.navigate', { prompt: `Search for ${query}?`, args: { url: searchUrl(query) } })
+    const verdict = await ctx.gate.check('chrome.navigate', { prompt: `Search for ${query}?`, args: { to: 'google.com' } })
     if (!verdict.allowed) return { say: verdict.reason }
     let tab
     try {

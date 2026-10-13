@@ -98,8 +98,9 @@ VAS's own tools, which ask for themselves.
 A few rules sit on top of the tiers:
 
 - **After JARVIS reads a page, going to a different site asks first.** Following
-  a link, searching, looking up a URL, showing a remote page or picture, or
-  saving a routine that opens a site asks "You just read mail.google.com. Go to
+  a link, searching, looking up a URL, showing a remote page or picture,
+  saving a routine that opens a site, or handing an address to a tool from
+  another MCP server you have set up asks "You just read mail.google.com. Go to
   example.com now?". A yes covers the sites it named for that answer; a no
   covers the whole answer. What was read counts for the rest of the
   conversation, because Claude remembers it. A page can't quietly send what
@@ -114,8 +115,10 @@ A few rules sit on top of the tiers:
   behind the one on screen.
 - **Settings can't be the way around a safeguard.** While locked down, or with
   "Clicking Confirm counts as a yes" off, loosening anything in the drawer
-  (lifting lockdown, a tier toward "just do it", who can talk) asks first, out
-  loud. With clicks off, only a spoken yes approves it.
+  (lifting lockdown, a tier toward "just do it", who can talk, forgetting or
+  replacing your voice) asks first, out loud. With clicks off, only a spoken
+  yes approves it. Lifting a lockdown, loosening a safeguard and forgetting
+  your voice always ask: they can be set to never, but not to "just do it".
 
 ## Where things live
 

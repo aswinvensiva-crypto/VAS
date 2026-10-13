@@ -750,7 +750,12 @@ export function destination(raw) {
   }
   if (u.protocol === 'http:' || u.protocol === 'https:') {
     const host = u.hostname.replace(/\.$/, '')
-    if (LOCAL_HOST.test(host)) return null
+    if (LOCAL_HOST.test(host)) {
+      // The bridge's own proxies (/img, /media, /page) fetch whatever address
+      // they are handed in `url=` — judge that one, not the loopback wrapper.
+      const inner = u.searchParams.get('url')
+      return inner ? destination(inner) : null
+    }
     return `${host.replace(/^www\./, '')}${u.port ? `:${u.port}` : ''}`
   }
   // Stays here: files, inline data, and a drive letter parsed as a scheme (C:\…).
@@ -759,6 +764,34 @@ export function destination(raw) {
   // machine by its own means, and none has a host to name.
   return `a ${u.protocol} address`
 }
+
+/**
+ * An address as the browser will open it, for navigating: "back" and
+ * "forward" as they are, and anything without a scheme over https — the
+ * extension prefixes it, so "/evil.example/x" becomes https:///evil.example/x,
+ * which is evil.example. Judged and sent in this one form, so what the taint
+ * rule asks about is what loads. Null for anything that is not a web address
+ * (file:, data:, javascript:…): those are not opened in the user's browser.
+ */
+export function navTarget(raw) {
+  const s = String(raw ?? '').replace(/[\t\n\r]/g, '').trim()
+  if (/^(back|forward)$/i.test(s)) return s.toLowerCase()
+  if (!s) return null
+  try {
+    const u = new URL(SCHEME.test(s) ? s : `https://${s.replace(/^[\/]+/, '')}`)
+    return u.protocol === 'http:' || u.protocol === 'https:' ? u.href : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * An acting tool's own outcome, without the rest of what the extension said.
+ * Its replies can restate the tab context — page-written titles, full URLs —
+ * which is what chrome_tabs already keeps from the model (originsOnly), and
+ * none of it would be noted as read for the taint rule.
+ */
+const statusOnly = (out, text) => (out?.isError ? out : { content: [{ type: 'text', text }] })
 
 /** "a", "a and b", "a, b and c", "a, b and 3 more" — for a spoken question. */
 function spokenList(names) {
@@ -989,28 +1022,29 @@ export function chromeServer({ allowWrites, gate = null, taint = null }) {
         tabId,
       },
       async (args) => {
-        // The taint rule: after this turn has read a page, a different site is
-        // put to the user before the address leaves the machine.
+        const url = navTarget(args.url)
+        if (!url) return notDone('I only open web addresses in your browser.')
+        // The taint rule: after this conversation has read a page, a different
+        // site is put to the user before the address leaves the machine.
         if (taint) {
-          const leaving = await taint.leave(args.url, 'Go to')
+          const leaving = await taint.leave(url, 'Go to')
           if (!leaving.allowed) return notDone(leaving.reason)
         }
-        const where = destination(args.url)
+        const where = destination(url)
         const may = await permitted('chrome.navigate', where ? `Go to ${where}?` : 'Go there in your Chrome?', { to: where })
         if (!may.allowed) return notDone(may.reason)
-        const out = await forward('navigate')(args)
+        const out = await forward('navigate')({ ...args, url })
         if (out.isError) return out
         // Do not hand back until the page is really there. Everything the model
         // does next — reading it, screenshotting it, answering about it — is
         // wrong if it runs against the document this one replaced.
-        const url = String(args.url ?? '')
         if (/^https?:\/\//i.test(url)) {
           await settle(await resolveTab(args.tabId), url)
-        } else {
-          // back / forward: no target to compare against, so just let it breathe.
-          await new Promise((r) => setTimeout(r, 700))
+          return statusOnly(out, `Navigated to ${new URL(url).origin}. Read the page to see what is there.`)
         }
-        return out
+        // back / forward: no target to compare against, so just let it breathe.
+        await new Promise((r) => setTimeout(r, 700))
+        return statusOnly(out, `Went ${url}.`)
       },
     ),
 
@@ -1131,9 +1165,10 @@ export function chromeServer({ allowWrites, gate = null, taint = null }) {
    * question, read again after the answer, and the action runs on that tab
    * only if it is still there and still on that page.
    */
+  const DONE = { click: 'Clicked.', type: 'Typed it.', key: 'Pressed it.', form: 'Set it.', close: 'Closed the tab.' }
   const guarded = (kind, run) => async (args) => {
     args = args ?? {}
-    if (allowWrites) return run(args)
+    if (allowWrites) return statusOnly(await run(args), DONE[kind])
     const { prompt, tab, page } = await describeAction(kind, args)
     // Nothing to bind the answer to — the browser is gone, or the tab is not
     // one it will report — so there is nothing honest to ask about either.
@@ -1151,7 +1186,7 @@ export function chromeServer({ allowWrites, gate = null, taint = null }) {
       })
       return notDone('The page changed while I was asking, so I left it.')
     }
-    return run({ ...args, tabId: tab })
+    return statusOnly(await run({ ...args, tabId: tab }), DONE[kind])
   }
 
   if (allowWrites || gate) {
@@ -1207,7 +1242,8 @@ export function chromeServer({ allowWrites, gate = null, taint = null }) {
           const out = await forward('tabs_create_mcp', { needsTab: false })(args)
           // Whatever was just opened is what the next action should land in.
           activeTab = null
-          return out
+          const id = JSON.stringify(out?.content ?? '').match(/Tab ID:?\s*(\d+)/i)?.[1]
+          return statusOnly(out, id ? `Opened a new tab. Tab ID: ${id}` : 'Opened a new tab.')
         },
       ),
 

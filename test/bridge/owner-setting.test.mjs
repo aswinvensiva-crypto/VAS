@@ -143,3 +143,19 @@ test('a requireOwner left in permissions.json no longer decides anything', async
   assert.equal((await gate.check('app.close', { prompt: 'Close it?' })).allowed, false)
   assert.equal('requireOwner' in (await gateMod.loadPermissions()), false)
 })
+
+test('a safeguard set to "free" by hand in permissions.json still asks', async () => {
+  write('permissions.json', { tiers: { 'jarvis.unlock': 'free', 'settings.weaken': 'remember', 'app.close': 'free' } })
+  const asked = []
+  const gate = gateMod.createGate({
+    ask: async (_kind, args) => {
+      asked.push(args.prompt)
+      return { text: 'no', source: 'voice' }
+    },
+    audit: () => {},
+  })
+  assert.equal((await gate.check('jarvis.unlock', { prompt: 'Lift the lockdown?' })).allowed, false)
+  assert.equal((await gate.check('settings.weaken', { prompt: 'Loosen it?' })).allowed, false)
+  assert.equal((await gate.check('app.close', { prompt: 'Close it?' })).allowed, true, 'an ordinary action follows its tier')
+  assert.deepEqual(asked, ['Lift the lockdown?', 'Loosen it?'])
+})

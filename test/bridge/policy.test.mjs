@@ -36,3 +36,17 @@ test('session tools: search only by default, full set with --writes', () => {
   assert.ok(locked.disallowedTools.includes('WebFetch'))
   assert.deepEqual(sessionTools({ allowWrites: true }), {})
 })
+
+test('a configured server\'s tools are foreign; their inputs give up every address they carry', async () => {
+  const { addressesIn, foreignMcp } = await import('../../bridge/policy.mjs')
+  const { urlsIn } = await import('../../bridge/panels.mjs')
+  assert.equal(foreignMcp('mcp__fetch__fetch'), true)
+  assert.equal(foreignMcp('mcp__jarvis_chrome__chrome_navigate'), false, 'JARVIS\'s own ask for themselves')
+  assert.equal(foreignMcp('WebSearch'), false)
+  assert.deepEqual(addressesIn({ url: 'evil.example/?q=subjects' }, urlsIn), ['evil.example/?q=subjects'])
+  assert.deepEqual(
+    addressesIn({ request: { pages: ['see https://a.example/x and //b.example/y'] }, note: 'no address here' }, urlsIn),
+    ['https://a.example/x', '//b.example/y'],
+  )
+  assert.deepEqual(addressesIn({ query: 'kochi weather' }, urlsIn), [])
+})

@@ -2007,8 +2007,9 @@ kbd {
    rather than --accent: it is not a phase, and it must not turn amber because
    he happens to be asking a question.
 
-   Above the HUD, the blades and the diagnostics; below the permission
-   question and the enrollment screen, which must never be hidden by it. At the
+   Above the HUD, the blades, the diagnostics and the first-run models banner
+   (45), whose tab rows it would otherwise cover; below the enrollment screen
+   (50) and the permission question (60), which must never be hidden by it. At the
    window's minimum (720x480) it keeps a 16px margin all round and the body
    scrolls, so every control stays reachable.
 */
@@ -2017,7 +2018,7 @@ kbd {
   top: 16px;
   right: 16px;
   bottom: 16px;
-  z-index: 30;
+  z-index: 48;
   width: min(400px, calc(100vw - 32px));
   display: flex;
   flex-direction: column;

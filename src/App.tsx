@@ -97,6 +97,8 @@ export default function App() {
   const pendingConfirm = useRef<{ id: string; finish: (a: ConfirmAnswer) => void } | null>(null)
   /** Speaks the question, separately from the turn's own voice. */
   const confirmVoice = useRef<ReturnType<typeof createSpeaker> | null>(null)
+  /** What a turn did to the phase while a question was open (see whenNoQuestion). */
+  const afterConfirm = useRef<(() => void) | null>(null)
   /** When the open question finished playing (Infinity while it still is).
    *  The voice loop accepts only speech that began after it as the answer. */
   const questionEnd = useRef(0)
@@ -107,6 +109,17 @@ export default function App() {
   const clearIdle = () => {
     if (idleTimer.current) clearTimeout(idleTimer.current)
     idleTimer.current = null
+  }
+
+  /**
+   * A question asked from Settings can be open while a turn runs on. The turn
+   * must not take the phase from it — 'confirming' is what keeps the mic open
+   * for the answer and stops a "yes" being taken as a barge-in — so a phase
+   * change it makes meanwhile waits for the answer. The last one wins.
+   */
+  const whenNoQuestion = (change: () => void) => {
+    if (pendingConfirm.current) afterConfirm.current = change
+    else change()
   }
 
   const silence = () => {
@@ -153,6 +166,8 @@ export default function App() {
     const deadline = idleDeadline.current
     clearIdle()
     const s = store.getState()
+    // What was on screen, put back if the turn turns out to be nobody's.
+    const screen = { panels: s.panels, blades: s.blades, focusedBlade: s.focusedBlade, expandedBlade: s.expandedBlade }
     // Last turn's panels and blades go now, before the new answer starts
     // putting its own up. Anything the model marked sticky survives.
     s.clearPanels()
@@ -184,7 +199,7 @@ export default function App() {
           if (stale()) return
           if (!started) {
             started = true
-            store.getState().setPhase('speaking')
+            whenNoQuestion(() => store.getState().setPhase('speaking'))
             // The answer arriving is what ends the tool phase — a timer would
             // clear the readout while a slow tool was still running.
             store.getState().setActiveTool(null)
@@ -200,7 +215,7 @@ export default function App() {
           // Setting it unconditionally pinned the machine in 'tooling' for the
           // rest of any answer that called a tool after it started talking,
           // which also broke the reactor's lip-sync for the remainder.
-          if (!started) store.getState().setPhase('tooling')
+          if (!started) whenNoQuestion(() => store.getState().setPhase('tooling'))
           store.getState().setActiveTool(name)
           sfx.play('tool')
           music.working(true)
@@ -242,27 +257,34 @@ export default function App() {
         .setError(err instanceof Error ? err.message : 'Something went wrong.')
     } finally {
       if (!stale()) {
-        speaker.current = null
+        // Only the turn's own voice: a demo started meanwhile (V, T) keeps its
+        // handle, so it can still be stopped.
+        if (speaker.current === spk) speaker.current = null
         sfx.duck(false)
         music.duck(false)
         store.getState().setActiveTool(null)
         music.working(false)
         if (ignoredTurn) {
-          // Not a turn at all: their words come off the transcript, and the
-          // window goes back to closing when it would have — no chime, and no
-          // fresh follow-up, or a TV talking would keep him awake for good.
+          // Not a turn at all: their words come off the transcript, the screen
+          // is put back as it was, and the window goes back to closing when it
+          // would have — no chime, and no fresh follow-up, or a TV talking
+          // would keep him awake for good.
           store.getState().dropTurn(userTurnId)
-          const left = deadline - Date.now()
-          if (left <= 0) goDormant()
-          else {
-            store.getState().setPhase('listening')
-            idleTimer.current = setTimeout(goDormant, left)
-          }
-        } else if (after === 'dormant') goDormant()
+          store.setState(screen)
+          whenNoQuestion(() => {
+            const left = deadline - Date.now()
+            if (left <= 0) goDormant()
+            else {
+              store.getState().setPhase('listening')
+              idleDeadline.current = deadline
+              idleTimer.current = setTimeout(goDormant, left)
+            }
+          })
+        } else if (after === 'dormant') whenNoQuestion(goDormant)
         // Stay open. Having to say his name again to add one more sentence is
         // the difference between a conversation and a vending machine —
         // unless the turn itself was "go to sleep".
-        else listen(FOLLOW_UP_MS)
+        else whenNoQuestion(() => listen(FOLLOW_UP_MS))
       }
     }
   }
@@ -272,10 +294,13 @@ export default function App() {
   /** What the voice loop should do with what it hears, derived from phase. */
   const mode = (): VoiceMode => {
     const phase = store.getState().phase
-    // The enrollment screen has the microphone; nothing said there is a
-    // command — but a question from the gate is still answered (replacing a
-    // saved voice from there asks one).
-    if (store.getState().enrolling && phase !== 'confirming') return 'deaf'
+    // A question open is answered whatever else is going on — over the
+    // enrollment screen (replacing a saved voice asks one), or while a turn
+    // runs on under a question from Settings. Raised guard while it, or
+    // anything, is being spoken, so it is not heard as its own answer.
+    if (pendingConfirm.current) return speakingNow() ? 'guard' : 'command'
+    // The enrollment screen has the microphone; nothing said there is a command.
+    if (store.getState().enrolling) return 'deaf'
     switch (phase) {
       case 'offline':
       case 'boot':
@@ -340,7 +365,9 @@ export default function App() {
     // one way the question could approve itself; see answersQuestion), so
     // cutting the question short for it would leave the user unheard and
     // unasked. The question finishes, and the answer that follows it counts.
-    if (phase === 'confirming') return
+    // Keyed off the question, not the phase: one from Settings can be open
+    // while a turn runs, and a "yes" must not cut that turn off.
+    if (phase === 'confirming' || pendingConfirm.current) return
 
     const wasBusy =
       phase === 'thinking' || phase === 'tooling' || phase === 'speaking'
@@ -350,6 +377,10 @@ export default function App() {
       // Abandon the answer in flight. The turn counter moves in respond()'s
       // replacement; bumping it here covers the case where nothing replaces it.
       turn.current++
+      // Cutting in opens a listening window of its own; a turn that comes of
+      // it and turns out to be nobody's goes back to this one, not to one
+      // that closed before the answer began.
+      idleDeadline.current = Date.now() + FOLLOW_UP_MS
       interrupt()
       store.getState().setActiveTool(null)
       music.working(false)
@@ -411,6 +442,7 @@ export default function App() {
       // A question can also come between turns — a change made in Settings —
       // with the listening window open; it closes when it would have.
       const deadline = idleDeadline.current
+      afterConfirm.current = null
       let settled = false
       const finish = (a: ConfirmAnswer) => {
         if (settled) return
@@ -420,7 +452,12 @@ export default function App() {
         confirmVoice.current = null
         pendingConfirm.current = null
         store.getState().setConfirm(null)
-        if (store.getState().phase === 'confirming') {
+        const deferred = afterConfirm.current
+        afterConfirm.current = null
+        if (deferred) {
+          // A turn ran on while the question was open; its latest change wins.
+          deferred()
+        } else if (store.getState().phase === 'confirming') {
           store.getState().setPhase(resumeTo)
           if (resumeTo === 'listening' || resumeTo === 'waking') {
             // Asking cleared the idle timer; without it he would listen forever.
@@ -548,7 +585,9 @@ export default function App() {
     // that finds no quiet moment for half a minute goes on the error line.
     const sayNotice = (text: string, waited = 0) => {
       const s = store.getState()
-      const idle = (s.phase === 'dormant' || s.phase === 'listening') && !speaker.current
+      // Not over the enrollment screen: its own recorder would take the
+      // notice as the next line, and his voice would go into yours.
+      const idle = (s.phase === 'dormant' || s.phase === 'listening') && !speaker.current && !s.enrolling
       if (!idle) {
         if (waited < 30) setTimeout(() => sayNotice(text, waited + 1), 1000)
         else s.setError(text)

@@ -310,3 +310,23 @@ test('without a taint rule the display server behaves as it always has', async (
   assert.equal(out.isError, undefined)
   assert.equal(blades.length, 1)
 })
+
+test('navTarget: an address as the browser will open it, and nothing that is not a web address', () => {
+  const { navTarget, destination } = chrome
+  assert.equal(navTarget('back'), 'back')
+  assert.equal(navTarget('evil.example/?q=1'), 'https://evil.example/?q=1')
+  // The extension would open https:///evil.example/… — which is evil.example.
+  assert.equal(navTarget('/evil.example/?q=1'), 'https://evil.example/?q=1')
+  assert.equal(navTarget('/\evil.example/x'), 'https://evil.example/x')
+  assert.equal(destination(navTarget('/evil.example/?q=1')), 'evil.example')
+  for (const refused of ['data:text/html,<img src=https://evil.example/?q=1>', 'javascript:fetch(1)', 'file:///C:/a.txt', 'C:\a.txt', '']) {
+    assert.equal(navTarget(refused), null, refused)
+  }
+})
+
+test('destination: the bridge\'s own proxies are judged by the address they would fetch', () => {
+  const { destination } = chrome
+  assert.equal(destination('http://127.0.0.1:8787/img?url=https%3A%2F%2Fevil.example%2Fpx%3Fd%3Dsubjects'), 'evil.example')
+  assert.equal(destination('http://localhost:5173/page?url=evil.example'), 'evil.example')
+  assert.equal(destination('http://127.0.0.1:8787/health'), null)
+})

@@ -73,12 +73,26 @@ export function Settings() {
     }
   }, [])
 
+  /** The voice name show() last put in the store, so its own echo is not taken as V. */
+  const shownVoice = useRef<string | null>(null)
   const show = (next: SettingsSnapshot) => {
     setData(next)
     // A voice chosen here, or by hand in config.json, is the one he speaks with.
     setPreferredVoice(next.general.tts.voice)
-    if (useStore.getState().voice) useStore.getState().setVoice(currentVoiceName())
+    if (useStore.getState().voice) {
+      shownVoice.current = currentVoiceName()
+      useStore.getState().setVoice(shownVoice.current)
+    }
   }
+
+  // V (in App) picks the next voice and saves it; the Voice field shows it
+  // at once. Not by reloading: a reload racing that save could put the old
+  // voice back.
+  const voiceNow = useStore((s) => s.voice)
+  useEffect(() => {
+    if (!voiceNow || voiceNow === shownVoice.current) return
+    setData((d) => (d && d.general.tts.voice !== voiceNow ? { ...d, general: { ...d.general, tts: { voice: voiceNow } } } : d))
+  }, [voiceNow])
 
   useEffect(() => {
     if (!open) return
@@ -109,6 +123,15 @@ export function Settings() {
   }
 
   const onKeyDown = (e: ReactKeyboardEvent) => {
+    // A question on screen above the drawer: Escape answers it no, as it does
+    // anywhere else, rather than closing the drawer under it.
+    const question = useStore.getState().confirm
+    if (e.key === 'Escape' && question) {
+      e.preventDefault()
+      e.stopPropagation()
+      question.answer({ source: 'click', approved: false })
+      return
+    }
     const el = e.target as HTMLElement
     // Typing in a field, or a list where a letter picks an option. A checkbox
     // or a button is not typing.
@@ -619,7 +642,7 @@ function PermissionsTab({ data, run }: { data: SettingsSnapshot; run: Run }) {
               aria-label={a.label}
               onChange={(e) => save({ tiers: { [a.action]: e.target.value } })}
             >
-              {TIERS.map(([tier, label]) => (
+              {TIERS.filter(([tier]) => !a.alwaysAsks || tier === 'confirm' || tier === 'deny').map(([tier, label]) => (
                 <option key={tier} value={tier}>
                   {label}
                   {tier === a.default ? ' (default)' : ''}

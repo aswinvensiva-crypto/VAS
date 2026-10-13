@@ -48,6 +48,14 @@ export const DEFAULT_TIERS = {
 }
 
 /**
+ * The safeguards themselves — lifting a lockdown, loosening one from Settings,
+ * forgetting your voice. Never quieter than asking, whatever permissions.json
+ * says: set to "just do it", lockdown and "only a spoken yes" would stop
+ * nobody. They can still be set to never.
+ */
+export const ALWAYS_ASK = new Set(['jarvis.unlock', 'settings.weaken', 'voice.forget'])
+
+/**
  * Whose yes counts is not in here: it is config.json's owner.require, the one
  * owner setting the voice pipeline reads too (an old requireOwner in this file
  * is moved there at startup, see migrateOwnerRequirement). Unknown keys are
@@ -157,10 +165,13 @@ export function createGate({
    */
   async function check(action, { subject, subjectName, prompt, args } = {}) {
     const permissions = await loadPermissions()
+    const set = permissions.tiers[action] ?? DEFAULT_TIERS[action] ?? 'confirm'
     const tier =
       permissions.lockdown && action !== 'jarvis.unlock'
         ? 'lockdown'
-        : permissions.tiers[action] ?? DEFAULT_TIERS[action] ?? 'confirm'
+        : ALWAYS_ASK.has(action) && (set === 'free' || set === 'remember')
+          ? 'confirm'
+          : set
     const record = (decision, extra = {}) =>
       audit({ kind: 'gate', name: action, args: { subject, ...args }, tier, decision, ...extra })
 

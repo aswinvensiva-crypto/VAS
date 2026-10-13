@@ -312,9 +312,9 @@ export function Hud() {
       {ui.chrome.suggestions && <Suggestions />}
 
       {/* At the document root, not inside .hud: the HUD is its own stacking
-          context (z-index 4), so inside it the card's z-index 40 would still
-          sit under the Settings drawer (30) — and a question must never be
-          hidden behind anything. */}
+          context (z-index 4), so inside it the card would sit under the
+          Settings drawer and the enrollment screen whatever its own z-index —
+          and a question must never be hidden behind anything. */}
       {confirm &&
         createPortal(
         <div className="confirm-card" role="alertdialog" aria-label="JARVIS is asking for your permission">

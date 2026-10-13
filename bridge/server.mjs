@@ -17,11 +17,11 @@
 
 import { WebSocketServer } from 'ws'
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk'
-import { displayServer } from './panels.mjs'
+import { displayServer, urlsIn } from './panels.mjs'
 import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer, createTaint } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
-import { createPolicy, sessionTools } from './policy.mjs'
+import { addressesIn, createPolicy, foreignMcp, sessionTools } from './policy.mjs'
 import { createGate } from './gate.mjs'
 import { buildSystemPrompt } from './persona.mjs'
 import { createBrain } from './neurons/brain.mjs'
@@ -1471,9 +1471,25 @@ wss.on('connection', (socket) => {
         // through a `Bash: echo hello` without asking, and only reaches us for
         // something with a consequence, like a `touch`. So a deny here is
         // reliable; an absence of a call here is not proof nothing ran.
-        canUseTool: async (toolName) => {
+        canUseTool: async (toolName, input) => {
           const ok = decideTool(toolName)
           console.log(`[jarvis] tool ${toolName} -> ${ok ? 'allow' : 'deny'}`)
+          // A tool from a server the user configured (a fetcher, a crawler)
+          // can carry what was read out in an address as well as JARVIS's
+          // own can; it just does not ask. So once this conversation has read
+          // a page, any address it is handed is put to the taint rule here.
+          if (ok && foreignMcp(toolName) && taint.hosts().length) {
+            const urls = addressesIn(input, urlsIn)
+            if (urls.length) {
+              const leaving = await taint.leave(urls, 'Send a request to')
+              if (!leaving.allowed) {
+                return {
+                  behavior: 'deny',
+                  message: `Not done — ${leaving.reason} Say so in a few words; do not try again unless asked.`,
+                }
+              }
+            }
+          }
           return ok
             ? { behavior: 'allow' }
             : {

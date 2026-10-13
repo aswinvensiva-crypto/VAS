@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import YAML from 'yaml'
 import { z } from 'zod'
-import { DEFAULT_TIERS, Tier, loadApps, loadPermissions, saveApps, savePermissions } from './gate.mjs'
+import { ALWAYS_ASK, DEFAULT_TIERS, Tier, loadApps, loadPermissions, saveApps, savePermissions } from './gate.mjs'
 import { saveCorrections, validateCorrection } from './corrections/store.mjs'
 import { USER_BRAIN } from './neurons/brain.mjs'
 import { audit as defaultAudit } from './store/audit.mjs'
@@ -210,6 +210,8 @@ export function createSettings({ config, voice, corrections, brain, speaker, gat
           label: ACTION_LABELS[action] ?? action,
           tier: tiers[action],
           default: DEFAULT_TIERS[action] ?? 'confirm',
+          // A safeguard: only "ask every time" or "never" (gate.mjs ALWAYS_ASK).
+          alwaysAsks: ALWAYS_ASK.has(action),
         })),
       },
       voice: {
@@ -304,9 +306,12 @@ export function createSettings({ config, voice, corrections, brain, speaker, gat
 
   async function permissions(patch) {
     let p = await loadPermissions()
-    for (const action of Object.keys(patch.tiers ?? {})) {
+    for (const [action, tier] of Object.entries(patch.tiers ?? {})) {
       if (!Object.hasOwn(DEFAULT_TIERS, action) && !Object.hasOwn(p.tiers, action)) {
         throw refuse(400, `"${action}" is not an action JARVIS asks about.`)
+      }
+      if (ALWAYS_ASK.has(action) && (tier === 'free' || tier === 'remember')) {
+        throw refuse(400, `"${ACTION_LABELS[action] ?? action}" always asks: it is what keeps the other safeguards on.`)
       }
     }
     if (p.lockdown && patch.lockdown === false) {

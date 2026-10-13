@@ -82,9 +82,7 @@ export function Enroll() {
   const [note, setNote] = useState('')
   const [level, setLevel] = useState(0)
   const [result, setResult] = useState<{ verdict: string; score: number } | null>(null)
-  const session = useRef<string | null>(null)
   const vad = useRef<Vad | null>(null)
-  const busy = useRef(false)
   const stepRef = useRef(0)
   // The lines being read: the plan's, plus any added to reach the counts.
   const [lines, setLines] = useState<string[]>(FALLBACK.prompts)
@@ -99,9 +97,13 @@ export function Enroll() {
     stepRef.current = 0
     setNote('Read the line out loud, at your normal volume.')
     setResult(null)
-    session.current = null
     have.current = { short: 0, long: 0 }
+    // This opening's own. A clip still uploading when the screen is cancelled
+    // finishes into these and stops at the next `stopped` check, so it can
+    // neither save a voice nobody finished nor write into a later session.
     let stopped = false
+    let session: string | null = null
+    let busy = false
     const showLines = (next: string[]) => {
       linesRef.current = next
       setLines(next)
@@ -123,17 +125,18 @@ export function Enroll() {
     }
 
     const onClip = async (blob: Blob) => {
-      if (busy.current || stopped) return
-      busy.current = true
+      if (busy || stopped) return
+      busy = true
       try {
         if (stepRef.current < linesRef.current.length) {
-          const q = session.current ? `?session=${session.current}` : ''
+          const q = session ? `?session=${session}` : ''
           const r = await post(`/voice/enroll${q}`, blob)
+          if (stopped) return
           if (!r.ok) {
             setNote(r.reason ?? 'That one did not take — try the line again.')
             return
           }
-          session.current = r.session
+          session = r.session
           if (typeof r.short === 'number' && typeof r.long === 'number') have.current = { short: r.short, long: r.long }
           const next = stepRef.current + 1
           stepRef.current = next
@@ -142,8 +145,12 @@ export function Enroll() {
             setNote('Got it.')
             return
           }
+          // Cancelled while that clip was uploading: nothing is finished, and
+          // nothing saved.
+          if (stopped) return
           setStage('saving')
-          const done = await post(`/voice/enroll/finish?session=${session.current}`)
+          const done = await post(`/voice/enroll/finish?session=${session}`)
+          if (stopped) return
           if (!done.ok && done.need && (done.need.short > 0 || done.need.long > 0)) {
             // The bridge counted differently (a clip near two seconds): keep going.
             have.current = {
@@ -164,12 +171,12 @@ export function Enroll() {
           setNote('Saved. Now say anything — I will show whether it sounds like you.')
         } else {
           const r = await post('/voice/test', blob)
-          if (r.ok) setResult({ verdict: r.verdict, score: r.score })
+          if (!stopped && r.ok) setResult({ verdict: r.verdict, score: r.score })
         }
       } catch {
-        setNote('I could not reach the voice engine.')
+        if (!stopped) setNote('I could not reach the voice engine.')
       } finally {
-        busy.current = false
+        busy = false
       }
     }
 
