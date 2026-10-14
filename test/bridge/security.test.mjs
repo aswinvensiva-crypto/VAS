@@ -11,7 +11,16 @@ const WebSocket = createRequire(import.meta.url)('ws')
 
 let bridge
 before(async () => {
-  bridge = await startBridge()
+  // As if VAS were started from a terminal inside a Claude Code session.
+  bridge = await startBridge({
+    env: {
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: 'host-session',
+      CLAUDE_CODE_MESSAGING_TOKEN: 'host-secret',
+      CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH: '1',
+      CLAUDE_CODE_USE_BEDROCK: '1',
+    },
+  })
 })
 after(async () => {
   await bridge?.stop()
@@ -104,6 +113,12 @@ test('the agent session is locked down', async () => {
   assert.deepEqual(options.settingSources, [])
   assert.equal(options.cwd, join(bridge.dataDir, 'workspace'))
   assert.ok(!options.env.includes('JARVIS_BRIDGE_TOKEN'), 'token leaked into the agent environment')
+  // The session VAS was started from stays out of VAS's own claude.exe...
+  for (const k of ['CLAUDECODE', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH']) {
+    assert.ok(!options.env.includes(k), `${k} leaked into the agent environment`)
+  }
+  // ...but a setting the user chose on purpose is kept.
+  assert.ok(options.env.includes('CLAUDE_CODE_USE_BEDROCK'))
   assert.equal(options.canUseTool, 'function')
   for (const s of ['jarvis', 'jarvis_ui', 'jarvis_chrome', 'jarvis_eyes']) {
     assert.ok(options.mcpServers.includes(s), s)

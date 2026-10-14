@@ -23,6 +23,7 @@ import { chromeAvailable, chromeServer, createTaint } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { addressesIn, createPolicy, foreignMcp, sessionTools } from './policy.mjs'
 import { plainFailure, sessionTrouble } from './trouble.mjs'
+import { agentEnv } from './agent-env.mjs'
 import { createGate } from './gate.mjs'
 import { buildSystemPrompt } from './persona.mjs'
 import { createBrain } from './neurons/brain.mjs'
@@ -1422,12 +1423,10 @@ wss.on('connection', (socket) => {
         // transcript of that has no reason to outlive the conversation.
         persistSession: false,
         // The SDK replaces the child's environment when this is set, so the
-        // parent's is carried over — minus the session token, which the agent
-        // never needs and must not be able to read back out.
+        // parent's is carried over — minus the session token, and minus the
+        // wiring of any Claude Code session VAS was started from (agent-env.mjs).
         env: {
-          ...Object.fromEntries(
-            Object.entries(process.env).filter(([k]) => k !== 'JARVIS_BRIDGE_TOKEN'),
-          ),
+          ...agentEnv(process.env),
           CLAUDE_AGENT_SDK_CLIENT_APP: 'vas/0.1',
         },
         // The packaged app points this at the claude.exe it unpacked from asar.
