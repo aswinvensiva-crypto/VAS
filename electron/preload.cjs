@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('vas', {
   hotkey: boot.hotkey,
   onHotkey: (fn) => subscribe('vas:hotkey', () => fn()),
   onTray: (fn) => subscribe('vas:tray', fn),
+  onVisibility: (fn) => subscribe('vas:visibility', fn),
   setListening: (on) => ipcRenderer.send('vas:listening', Boolean(on)),
   quit: () => ipcRenderer.send('vas:quit'),
   show: () => ipcRenderer.send('vas:show'),

@@ -632,6 +632,8 @@ const handleRequest = async (req, res) => {
         kws: voice.kws,
         speaker: { available: voice.speaker, enrolled: Boolean(SPEAKER), require: CONFIG.owner.require },
         modelsMissing: voice.missing,
+        // Let go after a few quiet minutes (voice/idle.mjs), loaded again on demand.
+        whisperLoaded: VOICE.asrLoaded(),
         user: { name: CONFIG.userName },
       }),
     )

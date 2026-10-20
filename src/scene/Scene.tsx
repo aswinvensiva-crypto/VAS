@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import {
   EffectComposer,
@@ -13,6 +13,7 @@ import { Core } from './Core'
 import { Particles } from './Particles'
 import { Orbits } from './Orbits'
 import { useStore, phaseColor, accentFor, type Phase } from '../store'
+import { desktop } from '../lib/desktop'
 
 /** Rings spin harder while JARVIS is working — reads as effort. */
 const spinFor: Record<Phase, number> = {
@@ -193,13 +194,30 @@ function Rig() {
   )
 }
 
+/**
+ * Whether the window can be seen. The desktop app keeps Chromium's background
+ * throttling off so the microphone never stalls, which also means a hidden
+ * window would go on rendering this scene — bloom, 4,000 particles — at full
+ * rate, holding the GPU process at several hundred MB for nothing. In a
+ * browser tab Chromium throttles hidden pages itself.
+ */
+function useWindowShown(): boolean {
+  const [shown, setShown] = useState(() => !desktop?.startHidden)
+  useEffect(() => desktop?.onVisibility(({ hidden }) => setShown(!hidden)), [])
+  return shown
+}
+
 export function Scene() {
+  const shown = useWindowShown()
   return (
     <Canvas
       className="scene"
       camera={{ position: [0, 0, 6.2], fov: 45 }}
       gl={{ antialias: true, alpha: true }}
-      dpr={[1, 2]}
+      // 1.5, not 2: the bloom pass's buffers grow with the square of it, and
+      // a soft-edged glow gains nothing visible from the last half.
+      dpr={[1, 1.5]}
+      frameloop={shown ? 'always' : 'never'}
     >
       <Rig />
       {/*

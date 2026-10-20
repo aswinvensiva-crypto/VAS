@@ -4,6 +4,10 @@ import { existsSync, rmSync } from 'node:fs'
 import { MODELS, modelPath } from './models.mjs'
 import { writeKeywordsFile } from './keywords.mjs'
 import { dataDir } from '../store/files.mjs'
+import { createIdleRelease } from './idle.mjs'
+
+/** How long Whisper stays loaded after the last transcription (idle.mjs). */
+const ASR_IDLE_MS = Number(process.env.JARVIS_ASR_IDLE_MS ?? 3 * 60_000)
 
 /**
  * JARVIS's ears, on this machine.
@@ -48,6 +52,15 @@ export function createVoiceEngine({ config }) {
     workers[name] = w
     return w
   }
+
+  const asrIdle = createIdleRelease({
+    ms: ASR_IDLE_MS,
+    release: () => {
+      const w = workers.asr
+      delete workers.asr
+      void w?.terminate()
+    },
+  })
 
   /** `samples` is one clip, or a list of them for an op that takes several. */
   function call(name, op, samples, opts) {
@@ -129,6 +142,8 @@ export function createVoiceEngine({ config }) {
         rmSync(file.path, { force: true })
       }
     },
+    /** Whether Whisper is loaded right now (it is let go when idle). */
+    asrLoaded: () => Boolean(workers.asr),
     /** Let the sweep's thread go; call once its last spotTrial has settled. */
     endTrials() {
       const w = workers.trial
@@ -138,18 +153,21 @@ export function createVoiceEngine({ config }) {
     /** @returns {Promise<string>} */
     transcribe(samples) {
       const name = whisperName()
-      return call('asr', 'asr', samples, {
-        modelDir: modelPath(name),
-        size: name.replace('whisper-', ''),
-        language: config.stt.language,
-        threads,
-      })
+      return asrIdle.use(() =>
+        call('asr', 'asr', samples, {
+          modelDir: modelPath(name),
+          size: name.replace('whisper-', ''),
+          language: config.stt.language,
+          threads,
+        }),
+      )
     },
     /** @returns {Promise<number[]>} */
     embed(samples) {
       return call('fast', 'embed', samples, { modelPath: modelPath('speaker') })
     },
     close() {
+      asrIdle.cancel()
       for (const w of Object.values(workers)) void w.terminate()
     },
   }

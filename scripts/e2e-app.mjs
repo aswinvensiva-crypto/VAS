@@ -13,12 +13,18 @@
  * Claude sign-in — and checks it starts, says what is missing, and answers a
  * question meant for Claude with a sentence that says what to do.
  *
+ *   npm run e2e:app -- --memory   # also: the memory check (needs the voice models)
+ *
+ * The memory check starts the app hidden, has the bridge transcribe a few
+ * spoken clips so Whisper loads, and then checks that the 3D scene is not
+ * drawing while hidden and that Whisper is let go once it has been idle.
+ *
  * It drives the window over the Chrome DevTools protocol on a loopback port,
  * so it never needs a click. Speech is not involved: the voice pipeline has
  * its own tests.
  */
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -26,7 +32,9 @@ import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const EXE = resolve(process.argv[2] ?? join(ROOT, 'release', 'win-unpacked', 'VAS.exe'))
+const ARGS = process.argv.slice(2)
+const EXE = resolve(ARGS.find((a) => !a.startsWith('--')) ?? join(ROOT, 'release', 'win-unpacked', 'VAS.exe'))
+const MEMORY = ARGS.includes('--memory')
 const APP_DIR = dirname(EXE)
 
 const results = []
@@ -226,9 +234,87 @@ async function main() {
     /* a file still held for a moment; it is in the temp folder */
   }
 
+  if (MEMORY) await memoryRun()
+
   const failed = results.filter((r) => !r.ok)
   console.log(`\n${results.length - failed.length}/${results.length} checks passed`)
   process.exitCode = failed.length ? 1 : 0
+}
+
+/** Private MB per kind of VAS process: main, renderer, gpu-process, bridge, claude, other utilities. */
+function memoryByKind() {
+  const kinds = {}
+  for (const p of appProcessDetails()) kinds[p.kind] = (kinds[p.kind] ?? 0) + p.privateMB
+  return kinds
+}
+
+function appProcessDetails() {
+  const script =
+    `Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith('${APP_DIR.replace(/'/g, "''")}', 'OrdinalIgnoreCase') } | ` +
+    `ForEach-Object { [string]$_.ProcessId + '|' + $_.Name + '|' + [math]::Round($_.PrivatePageCount/1MB) + '|' + $_.CommandLine }`
+  const out = execFileSync('powershell.exe', ['-NoProfile', '-Command', script], { encoding: 'utf8' })
+  return out
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      const [pid, name, mb, ...cmd] = line.split('|')
+      const c = cmd.join('|')
+      const type = (c.match(/--type=([a-z-]+)/) ?? [])[1]
+      const kind = name.toLowerCase() === 'claude.exe' ? 'claude' : !type ? 'main' : type === 'utility' ? (/node\.mojom/i.test(c) ? 'bridge' : 'utility') : type
+      return { pid: Number(pid), kind, privateMB: Number(mb) }
+    })
+}
+
+async function memoryRun() {
+  const { synthesize } = await import('../test/bridge/helpers.mjs')
+  const clips = synthesize({
+    one: 'Open notepad and then tell me the time.',
+    two: 'What is the weather going to be like in Kochi this weekend?',
+    three: 'Tell me something interesting about octopuses and how they think.',
+  })
+  if (!clips) {
+    check('memory check', true, 'skipped: Windows speech synthesis is unavailable')
+    return
+  }
+  const IDLE_MS = 20_000
+  const { dt } = await launch({ JARVIS_ASR_IDLE_MS: String(IDLE_MS) })
+  try {
+    const health = JSON.parse((await dt.evaluate(`fetch(window.vas.bridge.http + '/health').then((r) => r.text())`)) ?? 'null')
+    if (!health?.stt || health.sttEngine === 'scribe') {
+      check('memory check', true, 'skipped: local Whisper is not installed (npm run models)')
+      return
+    }
+    await sleep(8_000)
+    const before = memoryByKind()
+    check(
+      'hidden, the 3D scene is not drawn',
+      (before['gpu-process'] ?? 0) < 350,
+      `graphics ${before['gpu-process'] ?? 0} MB`,
+    )
+    for (const path of Object.values(clips)) {
+      const b64 = readFileSync(path).toString('base64')
+      const said = await dt.evaluate(`(async () => {
+        const bytes = Uint8Array.from(atob('${b64}'), (c) => c.charCodeAt(0))
+        const r = await fetch(window.vas.bridge.http + '/stt?mode=command', { method: 'POST', headers: { 'content-type': 'audio/wav' }, body: bytes })
+        return (await r.json()).text ?? ''
+      })()`)
+      if (!said) break
+    }
+    const loaded = JSON.parse((await dt.evaluate(`fetch(window.vas.bridge.http + '/health').then((r) => r.text())`)) ?? '{}')
+    const busy = memoryByKind()
+    await sleep(IDLE_MS + 10_000)
+    const idle = memoryByKind()
+    const after = JSON.parse((await dt.evaluate(`fetch(window.vas.bridge.http + '/health').then((r) => r.text())`)) ?? '{}')
+    check(
+      'Whisper is let go once idle, and the bridge gives the memory back',
+      loaded.whisperLoaded === true && after.whisperLoaded === false && idle.bridge < busy.bridge - 100,
+      `bridge ${before.bridge} → ${busy.bridge} MB transcribing → ${idle.bridge} MB idle`,
+    )
+  } finally {
+    await dt.evaluate('window.vas.quit()')
+    dt.close()
+    await waitFor(async () => (appProcesses().length === 0 ? [] : null), 15_000, 'a clean exit').catch(() => {})
+  }
 }
 
 main().catch((err) => {

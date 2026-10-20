@@ -18,6 +18,8 @@ export interface VasDesktop {
   hotkey: string | null
   onHotkey(fn: () => void): () => void
   onTray(fn: (command: TrayCommand) => void): () => void
+  /** The window was hidden (tray, minimised) or shown again. */
+  onVisibility(fn: (state: { hidden: boolean }) => void): () => void
   setListening(on: boolean): void
   /** Bring the VAS window to the front. */
   show(): void

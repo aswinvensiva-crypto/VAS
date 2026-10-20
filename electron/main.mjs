@@ -148,7 +148,15 @@ function createWindow() {
   })
 
   // The bridge asks before using the camera while nobody can see the window.
-  const reportVisibility = () => bridge?.setWindowHidden(!win.isVisible() || win.isMinimized())
+  // Told to the bridge (the camera asks first while hidden) and to the face,
+  // which stops drawing its 3D scene when nobody can see it: with
+  // backgroundThrottling off for the microphone's sake, Chromium would
+  // otherwise render it at full rate in the tray.
+  const reportVisibility = () => {
+    const hidden = !win.isVisible() || win.isMinimized()
+    bridge?.setWindowHidden(hidden)
+    if (!win.isDestroyed()) win.webContents.send('vas:visibility', { hidden })
+  }
   for (const event of ['show', 'hide', 'minimize', 'restore']) win.on(event, reportVisibility)
 
   void win.loadURL(DEV_URL ?? `${APP_ORIGIN}/index.html`)
