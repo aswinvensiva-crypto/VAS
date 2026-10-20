@@ -1,0 +1,28 @@
+{
+  "name": "vas-mail",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Gmail send, list and read for VAS, as an OpenClaw tool plugin",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "plugin:build": "npm run build && openclaw plugins build --entry ./dist/index.js",
+    "plugin:validate": "npm run plugin:build && openclaw plugins validate --entry ./dist/index.js"
+  },
+  "openclaw": { "extensions": ["./dist/index.js"] },
+  "dependencies": {
+    "imapflow": "2.2.5",
+    "mailauth": "7.1.1",
+    "mailparser": "3.9.36",
+    "nodemailer": "7.0.10",
+    "typebox": "1.0.81"
+  },
+  "devDependencies": {
+    "@types/mailparser": "3.9.0",
+    "@types/nodemailer": "7.0.3",
+    "openclaw": "2026.10.3",
+    "typescript": "5.9.3"
+  },
+  "peerDependencies": { "openclaw": ">=2026.5.17" }
+}

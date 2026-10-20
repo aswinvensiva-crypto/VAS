@@ -1,0 +1,12 @@
+{
+  "name": "vas-quiet",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Keeps OpenClaw's own agent silent so it never replies to your contacts",
+  "license": "MIT",
+  "type": "module",
+  "scripts": { "build": "tsc" },
+  "openclaw": { "extensions": ["./dist/index.js"] },
+  "devDependencies": { "openclaw": "2026.10.3", "typescript": "5.9.3" },
+  "peerDependencies": { "openclaw": ">=2026.5.17" }
+}
