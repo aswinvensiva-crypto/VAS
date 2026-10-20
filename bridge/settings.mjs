@@ -8,6 +8,8 @@ import { USER_BRAIN } from './neurons/brain.mjs'
 import { audit as defaultAudit } from './store/audit.mjs'
 import { readConfigStrict, updateConfig } from './store/config.mjs'
 import { dataDir, readRawJson, watchData, writeTextAtomic } from './store/files.mjs'
+import { Contact, loadContacts, saveContacts } from './messaging/contacts.mjs'
+import { openclaw as defaultOpenClaw } from './openclaw.mjs'
 
 /**
  * Settings: everything VAS has learned about you and been allowed to do, in
@@ -55,6 +57,10 @@ const ACTION_LABELS = {
   'settings.weaken': 'Loosen a safeguard here while locked down or voice-only',
   'camera.hidden': 'Use the camera while VAS is hidden',
   'voice.forget': 'Forget your voice',
+  'email.send': 'Send an email from your Gmail',
+  'whatsapp.send': 'Send a WhatsApp message',
+  'telegram.send': 'Send a Telegram message',
+  'messages.read': 'Read your email and messages',
 }
 
 const GeneralPatch = z
@@ -131,7 +137,7 @@ async function catalogNames() {
  * @param {() => { check: Function } | null} [deps.gate]  the open face's
  *        permission gate, which can ask out loud; null when no face is open
  */
-export function createSettings({ config, voice, corrections, brain, speaker, gate = () => null, audit = defaultAudit }) {
+export function createSettings({ config, voice, corrections, brain, speaker, gate = () => null, audit = defaultAudit, openclaw = defaultOpenClaw }) {
   /**
    * Loosening a safeguard from here, once the owner has asked for more than a
    * click: lockdown on, or "clicking Confirm counts as a yes" turned off. The
@@ -171,7 +177,13 @@ export function createSettings({ config, voice, corrections, brain, speaker, gat
   }
 
   async function snapshot() {
-    const [apps, permissions, names] = await Promise.all([loadApps(), loadPermissions(), catalogNames()])
+    const [apps, permissions, names, contacts, gateway] = await Promise.all([
+      loadApps(),
+      loadPermissions(),
+      catalogNames(),
+      loadContacts(),
+      openclaw.reachable(),
+    ])
     const nameOf = (appId) => apps.allow[appId]?.name ?? names.get(appId) ?? appId
     const s = speaker()
     const tiers = { ...DEFAULT_TIERS, ...permissions.tiers }
@@ -214,6 +226,9 @@ export function createSettings({ config, voice, corrections, brain, speaker, gat
           alwaysAsks: ALWAYS_ASK.has(action),
         })),
       },
+      contacts: [...contacts].sort((a, b) => a.name.localeCompare(b.name)),
+      // Gmail, WhatsApp and Telegram go through OpenClaw on this PC.
+      messaging: { openclaw: gateway.ok ? { ok: true } : { ok: false, reason: gateway.reason ?? "OpenClaw isn't running." } },
       voice: {
         available: voice.status().speaker,
         enrolled: Boolean(s),
@@ -304,6 +319,22 @@ export function createSettings({ config, voice, corrections, brain, speaker, gat
     audit({ kind: 'settings', name: 'routine.delete', args: { routine: name } })
   }
 
+  /** Add a contact, or replace the one of the same name. */
+  async function putContact(entry) {
+    const list = (await loadContacts()).filter((c) => c.name.toLowerCase() !== entry.name.toLowerCase())
+    if (!entry.email && !entry.whatsapp && !entry.telegram) throw refuse(400, 'Give at least an email, a WhatsApp number or a Telegram chat.')
+    await saveContacts([...list, entry])
+    audit({ kind: 'settings', name: 'contact.put', args: { name: entry.name } })
+  }
+
+  async function removeContact({ name }) {
+    const list = await loadContacts()
+    const kept = list.filter((c) => c.name.toLowerCase() !== name.toLowerCase())
+    if (kept.length === list.length) throw refuse(404, `There is no contact called "${name}".`)
+    await saveContacts(kept)
+    audit({ kind: 'settings', name: 'contact.remove', args: { name } })
+  }
+
   async function permissions(patch) {
     let p = await loadPermissions()
     for (const [action, tier] of Object.entries(patch.tiers ?? {})) {
@@ -354,6 +385,8 @@ export function createSettings({ config, voice, corrections, brain, speaker, gat
     'DELETE /settings/apps/aliases': [z.object({ alias: Phrase }), removeAlias],
     'DELETE /settings/routines': [RoutineBody, deleteRoutine],
     'POST /settings/permissions': [PermissionsPatch, permissions],
+    'POST /settings/contacts': [Contact, putContact],
+    'DELETE /settings/contacts': [z.object({ name: z.string().trim().min(1).max(60) }), removeContact],
   }
 
   /**

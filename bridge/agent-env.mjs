@@ -31,8 +31,12 @@ const KEEP = new Set([
   'CLAUDE_CODE_CLIENT_KEY_PASSPHRASE',
 ])
 
-/** Set by a running Claude Code session for the processes it starts. */
-const SESSION_WIRING = /^(CLAUDECODE|CLAUDE_PID|CLAUDE_PREVIEW_\w+|CLAUDE_AGENT_SDK_\w+|CLAUDE_CODE_\w+)$/
+/**
+ * Set by a running Claude Code session for the processes it starts — and
+ * OpenClaw's gateway settings, whose token is owner access to your Gmail,
+ * WhatsApp and Telegram (bridge/openclaw.mjs reads it; Claude never needs it).
+ */
+const SESSION_WIRING = /^(CLAUDECODE|CLAUDE_PID|CLAUDE_PREVIEW_\w+|CLAUDE_AGENT_SDK_\w+|CLAUDE_CODE_\w+|OPENCLAW_\w+)$/
 
 /** @param {Record<string, string | undefined>} env @returns {Record<string, string>} */
 export function agentEnv(env) {

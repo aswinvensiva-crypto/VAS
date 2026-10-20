@@ -30,10 +30,11 @@ import { rankVoices } from '../lib/voiceRank'
  * standing him down.
  */
 
-type Tab = 'general' | 'corrections' | 'apps' | 'routines' | 'voice' | 'permissions'
+type Tab = 'general' | 'contacts' | 'corrections' | 'apps' | 'routines' | 'voice' | 'permissions'
 
 const TABS: Array<[Tab, string]> = [
   ['general', 'General'],
+  ['contacts', 'Contacts'],
   ['corrections', 'Corrections'],
   ['apps', 'Apps'],
   ['routines', 'Routines'],
@@ -205,6 +206,8 @@ export function Settings() {
           <div className="settings-empty">Reading the settings…</div>
         ) : tab === 'general' ? (
           <GeneralTab data={data} run={run} />
+        ) : tab === 'contacts' ? (
+          <ContactsTab data={data} run={run} />
         ) : tab === 'corrections' ? (
           <CorrectionsTab data={data} run={run} />
         ) : tab === 'apps' ? (
@@ -592,6 +595,79 @@ function VoiceTab({ data, run, onLearn }: { data: SettingsSnapshot; run: Run; on
         </button>
         {v.enrolled && <ConfirmButton label="Forget my voice" armed="Anyone could talk to him. Forget?" onConfirm={forget} />}
       </div>
+    </>
+  )
+}
+
+/* --------------------------------------------------------------- contacts */
+
+/**
+ * The people you message by name, and whether OpenClaw — which holds the
+ * Gmail, WhatsApp and Telegram sign-ins on this PC — is answering.
+ */
+function ContactsTab({ data, run }: { data: SettingsSnapshot; run: Run }) {
+  const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const [whatsapp, setWhatsapp] = useState('')
+  const [telegram, setTelegram] = useState('')
+  const gateway = data.messaging.openclaw
+
+  const add = async (e: FormEvent) => {
+    e.preventDefault()
+    const entry = {
+      name: name.trim(),
+      ...(email.trim() ? { email: email.trim() } : {}),
+      ...(whatsapp.trim() ? { whatsapp: whatsapp.trim() } : {}),
+      ...(telegram.trim() ? { telegram: telegram.trim() } : {}),
+    }
+    if (await run(() => changeSettings('POST', 'contacts', entry), `Saved ${entry.name}.`)) {
+      setName('')
+      setEmail('')
+      setWhatsapp('')
+      setTelegram('')
+    }
+  }
+
+  return (
+    <>
+      <div className="settings-section">Gmail, WhatsApp and Telegram</div>
+      <p className={gateway.ok ? 'settings-hint' : 'settings-hint settings-note-bad'}>
+        {gateway.ok
+          ? 'OpenClaw is running on this PC. Every message is read back and needs your yes before it goes.'
+          : `OpenClaw isn't answering: ${gateway.reason ?? 'not running'}`}
+      </p>
+
+      <div className="settings-section">Contacts</div>
+      {data.contacts.length === 0 ? (
+        <div className="settings-empty">None yet. You can still say an address or a number with its country code.</div>
+      ) : (
+        <ul className="settings-list">
+          {data.contacts.map((c) => (
+            <li key={c.name} className="settings-item">
+              <span className="settings-item-main">
+                {c.name}
+                <span className="settings-sub">{[c.email, c.whatsapp, c.telegram].filter(Boolean).join(' · ')}</span>
+              </span>
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={() => void run(() => changeSettings('DELETE', 'contacts', { name: c.name }), `Removed ${c.name}.`)}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <form className="settings-add settings-add-stack" onSubmit={(e) => void add(e)}>
+        <input className="settings-input" placeholder="Name, as you say it" value={name} maxLength={60} onChange={(e) => setName(e.target.value)} required />
+        <input className="settings-input" placeholder="Email" type="email" value={email} maxLength={200} onChange={(e) => setEmail(e.target.value)} />
+        <input className="settings-input" placeholder="WhatsApp, e.g. +919876543210" value={whatsapp} maxLength={24} onChange={(e) => setWhatsapp(e.target.value)} />
+        <input className="settings-input" placeholder="Telegram @username or chat id" value={telegram} maxLength={40} onChange={(e) => setTelegram(e.target.value)} />
+        <button type="submit" className="settings-btn" disabled={!name.trim()}>
+          Save contact
+        </button>
+      </form>
     </>
   )
 }

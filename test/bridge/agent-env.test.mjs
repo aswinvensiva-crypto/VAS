@@ -27,6 +27,8 @@ test('a launching Claude Code session\'s wiring is dropped; user settings and th
     CLAUDE_CODE_USE_BEDROCK: '1',
     CLAUDE_CODE_GIT_BASH_PATH: 'C:\Git\bin\bash.exe',
     CLAUDE_CODE_OAUTH_TOKEN: 'long-lived',
+    OPENCLAW_GATEWAY_TOKEN: 'owner-access',
+    OPENCLAW_STATE_DIR: 'C:\oc',
   })
   assert.deepEqual(Object.keys(env).sort(), [
     'ANTHROPIC_API_KEY',

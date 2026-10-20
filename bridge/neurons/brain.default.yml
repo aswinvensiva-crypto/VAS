@@ -174,6 +174,77 @@ synapses:
     neurons:
       - chrome_read_tab: {}
 
+  # --- messages (through OpenClaw: Gmail, WhatsApp, Telegram) -----------------
+  # Every send is read back and asked first; who and what are in the question.
+  - name: email-send
+    signals:
+      - order: { text: "email {{to}} saying {{message}}", matching-type: ordered-strict }
+      - order: { text: "send an email to {{to}} saying {{message}}", matching-type: ordered-strict }
+      - order: { text: "email {{to}} that {{message}}", matching-type: ordered-strict }
+    neurons:
+      - send_email: { to: "{{to}}", message: "{{message}}" }
+
+  - name: whatsapp-send
+    signals:
+      - order: { text: "whatsapp {{to}} saying {{message}}", matching-type: ordered-strict }
+      - order: { text: "send a whatsapp to {{to}} saying {{message}}", matching-type: ordered-strict }
+      - order: { text: "message {{to}} on whatsapp saying {{message}}", matching-type: ordered-strict }
+      - order: { text: "whatsapp {{to}} that {{message}}", matching-type: ordered-strict }
+    neurons:
+      - send_whatsapp: { to: "{{to}}", message: "{{message}}" }
+
+  - name: telegram-send
+    signals:
+      - order: { text: "telegram {{to}} saying {{message}}", matching-type: ordered-strict }
+      - order: { text: "message {{to}} on telegram saying {{message}}", matching-type: ordered-strict }
+    neurons:
+      - send_telegram: { to: "{{to}}", message: "{{message}}" }
+
+  - name: messages-check
+    signals:
+      - order: { text: "any new messages", matching-type: ordered-strict }
+      - order: { text: "check my messages", matching-type: ordered-strict }
+      - order: { text: "do i have any messages", matching-type: ordered-strict }
+    neurons:
+      - check_messages: {}
+
+  - name: email-check
+    signals:
+      - order: { text: "check my email", matching-type: ordered-strict }
+      - order: { text: "any new email", matching-type: ordered-strict }
+      - order: { text: "any new emails", matching-type: ordered-strict }
+      - order: { text: "do i have any new email", matching-type: ordered-strict }
+    neurons:
+      - check_messages: { channel: email }
+
+  - name: whatsapp-check
+    signals:
+      - order: { text: "any new whatsapp messages", matching-type: ordered-strict }
+      - order: { text: "check my whatsapp", matching-type: ordered-strict }
+    neurons:
+      - check_messages: { channel: whatsapp }
+
+  - name: telegram-check
+    signals:
+      - order: { text: "any new telegram messages", matching-type: ordered-strict }
+      - order: { text: "check my telegram", matching-type: ordered-strict }
+    neurons:
+      - check_messages: { channel: telegram }
+
+  - name: message-read
+    signals:
+      - order: { text: "read the email from {{from}}", matching-type: ordered-strict }
+      - order: { text: "read my email from {{from}}", matching-type: ordered-strict }
+    neurons:
+      - read_message: { from: "{{from}}", channel: email }
+
+  - name: whatsapp-read
+    signals:
+      - order: { text: "read the whatsapp from {{from}}", matching-type: ordered-strict }
+      - order: { text: "what did {{from}} say on whatsapp", matching-type: ordered-strict }
+    neurons:
+      - read_message: { from: "{{from}}", channel: whatsapp }
+
   # --- learning --------------------------------------------------------------------
   - name: correction
     signals:

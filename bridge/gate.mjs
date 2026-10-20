@@ -44,6 +44,10 @@ export const DEFAULT_TIERS = {
   'jarvis.unlock': 'confirm',
   'settings.weaken': 'confirm',
   'camera.hidden': 'confirm',
+  'email.send': 'confirm',
+  'whatsapp.send': 'confirm',
+  'telegram.send': 'confirm',
+  'messages.read': 'free',
   'voice.forget': 'confirm',
 }
 
@@ -53,7 +57,15 @@ export const DEFAULT_TIERS = {
  * says: set to "just do it", lockdown and "only a spoken yes" would stop
  * nobody. They can still be set to never.
  */
-export const ALWAYS_ASK = new Set(['jarvis.unlock', 'settings.weaken', 'voice.forget'])
+export const ALWAYS_ASK = new Set([
+  'jarvis.unlock',
+  'settings.weaken',
+  'voice.forget',
+  // Sending on your behalf, to anyone you name: never without a yes.
+  'email.send',
+  'whatsapp.send',
+  'telegram.send',
+])
 
 /**
  * Whose yes counts is not in here: it is config.json's owner.require, the one

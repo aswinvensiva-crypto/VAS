@@ -2258,6 +2258,10 @@ kbd {
   gap: 6px;
   margin-top: 12px;
 }
+/* A form with more fields than fit on one row: one per line. */
+.settings-add-stack {
+  grid-template-columns: 1fr;
+}
 
 .settings-actions {
   display: flex;

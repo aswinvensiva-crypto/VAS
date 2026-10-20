@@ -31,6 +31,8 @@ export type SettingsSnapshot = {
     actions: Array<{ action: string; label: string; tier: Tier; default: Tier; alwaysAsks?: boolean }>
   }
   voice: { available: boolean; enrolled: boolean; clips: number; enrolledAt: string | null }
+  contacts: Array<{ name: string; email?: string; whatsapp?: string; telegram?: string }>
+  messaging: { openclaw: { ok: boolean; reason?: string } }
 }
 
 export type GeneralPatch = {
