@@ -36,14 +36,19 @@ function refuseRepeat(key: string) {
   recent.set(key, now);
 }
 
+/** How mail leaves: Gmail's SMTP server over TLS. Swappable so tests send nothing. */
+type Transport = { sendMail(message: object): Promise<{ messageId: string; accepted: unknown[]; rejected: unknown[] }> };
+export type CreateTransport = (options: { host: string; port: number; secure: boolean; auth: { user: string; pass: string } }) => Transport;
+
 export async function sendMail(
   config: MailConfig,
   { to, cc = [], subject, body }: { to: string[]; cc?: string[]; subject: string; body: string },
+  createTransport: CreateTransport = (options) => nodemailer.createTransport(options),
 ) {
   const auth = credentials(config);
   for (const a of [...to, ...cc]) if (!ADDRESS.test(a)) throw new ToolInputError(`"${a}" isn't an email address.`);
   refuseRepeat(JSON.stringify([to, cc, subject, body]));
-  const transport = nodemailer.createTransport({ host: config.smtpHost ?? "smtp.gmail.com", port: 465, secure: true, auth });
+  const transport = createTransport({ host: config.smtpHost ?? "smtp.gmail.com", port: 465, secure: true, auth });
   const info = await transport.sendMail({ from: auth.user, to, cc: cc.length ? cc : undefined, subject, text: body });
   return { messageId: info.messageId, accepted: info.accepted, rejected: info.rejected };
 }
@@ -97,7 +102,7 @@ export async function listMail(
         from: sender?.address ?? "",
         fromName: sender?.name ?? "",
         subject: msg.envelope?.subject ?? "",
-        date: msg.envelope?.date?.toISOString?.() ?? null,
+        date: msg.envelope?.date ? new Date(msg.envelope.date).toISOString() : null,
         unread: !msg.flags?.has("\\Seen"),
         verified: msg.source ? await verified(msg.source) : false,
       });
@@ -109,7 +114,7 @@ export async function listMail(
 export async function readMail(config: MailConfig, uid: number) {
   return withInbox(config, async (client) => {
     const msg = await client.fetchOne(String(uid), { source: true }, { uid: true });
-    if (!msg?.source) throw new ToolInputError("That email is no longer in the inbox.");
+    if (!msg || !msg.source) throw new ToolInputError("That email is no longer in the inbox.");
     const parsed = await simpleParser(msg.source);
     const sender = parsed.from?.value?.[0];
     const text = (parsed.text ?? "").trim();

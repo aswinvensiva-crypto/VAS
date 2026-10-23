@@ -5,8 +5,20 @@
   "description": "Keeps OpenClaw's own agent silent so it never replies to your contacts",
   "license": "MIT",
   "type": "module",
-  "scripts": { "build": "tsc" },
-  "openclaw": { "extensions": ["./dist/index.js"] },
-  "devDependencies": { "openclaw": "2026.10.3", "typescript": "5.9.3" },
-  "peerDependencies": { "openclaw": ">=2026.5.17" }
+  "scripts": {
+    "build": "tsc"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "openclaw": "2026.10.5",
+    "typescript": "6.0.3"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.5.17"
+  }
 }

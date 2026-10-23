@@ -1,0 +1,96 @@
+{
+  "id": "vas-mail",
+  "name": "VAS Mail",
+  "description": "Gmail send, list and read for the VAS desktop assistant.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "required": [
+      "user",
+      "appPassword"
+    ],
+    "properties": {
+      "user": {
+        "type": "string",
+        "description": "Your Gmail address."
+      },
+      "appPassword": {
+        "anyOf": [
+          {
+            "type": "string",
+            "minLength": 1
+          },
+          {
+            "type": "object",
+            "required": [
+              "source",
+              "provider",
+              "id"
+            ],
+            "properties": {
+              "source": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      },
+      "smtpHost": {
+        "type": "string",
+        "default": "smtp.gmail.com"
+      },
+      "imapHost": {
+        "type": "string",
+        "default": "imap.gmail.com"
+      }
+    }
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "vas_mail_send",
+      "vas_mail_list",
+      "vas_mail_read"
+    ]
+  },
+  "toolMetadata": {
+    "vas_mail_send": {
+      "optional": true
+    },
+    "vas_mail_list": {
+      "optional": true
+    },
+    "vas_mail_read": {
+      "optional": true
+    }
+  },
+  "configContracts": {
+    "secretInputs": {
+      "paths": [
+        {
+          "path": "appPassword",
+          "expected": "string",
+          "ownerKind": "capability"
+        }
+      ]
+    }
+  },
+  "uiHints": {
+    "appPassword": {
+      "sensitive": true,
+      "label": "Gmail app password"
+    },
+    "user": {
+      "label": "Gmail address"
+    }
+  }
+}
