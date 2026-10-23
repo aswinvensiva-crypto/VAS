@@ -678,8 +678,9 @@ export function Blades() {
  * happening" — a tool call is the one moment the interface stops being a face
  * and becomes machinery, and the reactor cannot carry that on its own.
  *
- * Deliberately CSS rather than three.js: the scene is bloomed and tone-mapped,
- * which is exactly wrong for a 1px edge. Kept in the DOM it stays a blade.
+ * Deliberately a layer of its own rather than part of the reactor: the orb is
+ * drawn soft and glowing, which is exactly wrong for a 1px edge. Kept apart it
+ * stays a blade.
  */
 const SWEEP = [1, 2, 3, 4, 5, 6]
 

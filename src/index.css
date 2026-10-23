@@ -5,7 +5,7 @@
      this one stays put and is what anything neutral pins itself to. */
   --interface: #00e5ff;
   --accent: var(--interface);
-  --bg: #01060c;
+  --bg: #06050f;
   font-family: 'Chakra Petch', system-ui, sans-serif;
   color-scheme: dark;
 }
@@ -23,28 +23,157 @@ body,
   overflow: hidden;
 }
 
-/* Faint scanlines + radial falloff so the 3D never sits on flat black. */
+/* body::after (replaces lines 26-42): vignette only, no cyan scanlines */
 body::after {
   content: '';
   position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: 5;
-  background:
-    radial-gradient(ellipse at center, transparent 30%, rgba(0, 0, 0, 0.55) 100%),
-    repeating-linear-gradient(
-      0deg,
-      rgba(0, 229, 255, 0.028) 0px,
-      rgba(0, 229, 255, 0.028) 1px,
-      transparent 1px,
-      transparent 3px
-    );
+  background: radial-gradient(ellipse at center, transparent 38%, rgba(0, 0, 0, 0.6) 100%);
 }
+
+/* ------------------------------------------------------------------ scene */
+/* Replaces the .scene rule (lines 44-48). The Pop Orb. One colour in (--orb,
+   written by reactor.ts); every other hue is derived here, so any CSS colour
+   JARVIS sends recolours the whole orb, and the registered properties make
+   every change glide. */
+
+@property --orb { syntax: '<color>'; inherits: true; initial-value: #4b4f78; }
+@property --pop-h { syntax: '<number>'; inherits: true; initial-value: 62; }
+@property --alt-h { syntax: '<number>'; inherits: true; initial-value: -44; }
 
 .scene {
   position: fixed;
   inset: 0;
   z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+  --glow: 1;
+  --orb-hi: oklch(from var(--orb) calc(l + 0.12 + 0.05 * var(--glow)) calc(c * 0.55) h);
+  --orb-pop: oklch(from var(--orb) calc(l + 0.03) c calc(h + var(--pop-h)));
+  --orb-alt: oklch(from var(--orb) l c calc(h + var(--alt-h)));
+  --orb-deep: oklch(from var(--orb) calc(l * 0.34) calc(c * 0.85) calc(h + 24));
+  transition: --orb 650ms cubic-bezier(0.3, 0.7, 0.2, 1), --pop-h 650ms ease, --alt-h 650ms ease;
+}
+/* "Asking you a yes/no": the only warm monochrome state. */
+.scene[data-phase='confirming'] { --pop-h: -16; --alt-h: -36; }
+/* Tooling's hot pink would rotate into orange; keep the warm side for confirming. */
+.scene[data-phase='tooling'] { --pop-h: 34; --alt-h: -52; }
+
+.orb-stage { position: absolute; inset: 0; margin: auto; width: 60vmin; height: 60vmin; z-index: 2; }
+.orb-stage > * { position: absolute; }
+
+.orb-halo {
+  inset: -42%;
+  border-radius: 50%;
+  opacity: 0;
+  will-change: transform, opacity;
+  background: radial-gradient(closest-side,
+    color-mix(in oklab, var(--orb) 62%, transparent),
+    color-mix(in oklab, var(--orb-pop) 26%, transparent) 46%,
+    color-mix(in oklab, var(--orb-alt) 8%, transparent) 72%,
+    transparent);
+}
+.orb-ringglow {
+  inset: -7%;
+  border-radius: 50%;
+  opacity: 0;
+  will-change: opacity;
+  background: radial-gradient(closest-side, transparent 74%,
+    color-mix(in oklab, var(--orb) 55%, transparent) 86%, transparent);
+}
+/* Four chunky arcs with gaps: hi, phase, pop and alt hues. */
+.orb-ring {
+  inset: 0;
+  border-radius: 50%;
+  will-change: transform;
+  background: conic-gradient(
+    var(--orb-hi) 0%, var(--orb) 8%, var(--orb-pop) 22%, transparent 22% 25%,
+    var(--orb-alt) 25%, var(--orb) 47%, transparent 47% 50%,
+    var(--orb-hi) 50%, var(--orb-pop) 72%, transparent 72% 75%,
+    var(--orb) 75%, var(--orb-alt) 97%, transparent 97% 100%);
+  -webkit-mask: radial-gradient(closest-side, transparent 91.5%, #000 92%, #000 99.3%, transparent 100%);
+  mask: radial-gradient(closest-side, transparent 91.5%, #000 92%, #000 99.3%, transparent 100%);
+}
+
+.orb-ticks,
+.orb-lines { left: -8%; top: -8%; width: 116%; height: 116%; overflow: visible; }
+.orb-ticks { will-change: transform; }
+.orb-tickmarks { fill: none; stroke: var(--orb-hi); stroke-width: 0.8; stroke-linecap: round; opacity: 0.55; }
+.orb-chase-arc { fill: none; stroke: var(--orb-pop); stroke-width: 3; stroke-linecap: round; opacity: 0; }
+.orb-comet { fill: none; stroke: var(--orb-hi); stroke-width: 2.2; stroke-linecap: round; opacity: 0; }
+.orb-beacon-ring { fill: none; stroke: var(--orb-hi); stroke-width: 1.4; stroke-dasharray: 5 9; opacity: 0; }
+.orb-wire { display: none; }
+.orb-wire circle { fill: none; stroke-width: 1.3; }
+.orb-wire .w0 { stroke: var(--orb-hi); }
+.orb-wire .w1 { stroke: var(--orb-pop); }
+.orb-wire .w2 { stroke: var(--orb); }
+.orb-wire .w3 { stroke: var(--orb-alt); }
+
+/* Eight flat pips on the inner track: circle / rounded square / triangle. */
+.orb-pips { left: 50%; top: 50%; width: 0; height: 0; }
+.orb-pip {
+  position: absolute;
+  left: -1.3vmin;
+  top: -1.3vmin;
+  width: 2.6vmin;
+  height: 2.6vmin;
+  transform: scale(0);
+  will-change: transform;
+}
+.orb-pip.k0 { border-radius: 50%; }
+.orb-pip.k1 { border-radius: 28%; }
+.orb-pip.k2 { clip-path: polygon(50% 4%, 97% 92%, 3% 92%); }
+.orb-pip.t0 { background: var(--orb-pop); }
+.orb-pip.t1 { background: var(--orb); }
+.orb-pip.t2 { background: var(--orb-alt); }
+.orb-pip.t3 { background: var(--orb-hi); }
+
+/* The liquid core. */
+.orb-pulse { left: 6%; top: 6%; width: 88%; height: 88%; }
+.orb-goo { display: block; width: 100%; height: 100%; overflow: visible; opacity: calc(0.55 + 0.45 * min(var(--glow), 1)); }
+.st-hi { stop-color: var(--orb-hi); }
+.st-orb { stop-color: var(--orb); }
+.st-pop { stop-color: var(--orb-pop); }
+.st-deep { stop-color: var(--orb-deep); }
+.orb-gloss { opacity: calc((0.18 + 0.22 * var(--glow)) * var(--core-in, 1)); }
+.orb-rim { fill: none; stroke: var(--orb-hi); stroke-width: 1.4; }
+
+.orb-ripple {
+  left: 20%;
+  top: 20%;
+  width: 60%;
+  height: 60%;
+  border-radius: 50%;
+  opacity: 0;
+  border: max(2px, 0.4vmin) solid var(--orb-pop);
+  box-shadow: 0 0 2vmin color-mix(in oklab, var(--orb) 55%, transparent);
+  will-change: transform, opacity;
+}
+
+/* style knob: three looks (reactor.ts sets data-style) */
+/* Only the bezel marks go: the tooling chase arc lives in the same svg and is
+   that phase's signature in every style. */
+.orb-stage[data-style='sphere'] :is(.orb-ring, .orb-ringglow, .orb-tickmarks) { display: none; }
+.orb-stage[data-style='sphere'] .orb-gloss { opacity: calc((0.45 + 0.3 * var(--glow)) * var(--core-in, 1)); }
+.orb-stage[data-style='sphere'] .orb-rim { stroke-width: 1; }
+.orb-stage[data-style='wire'] :is(.orb-pulse, .orb-ring, .orb-ringglow) { display: none; }
+.orb-stage[data-style='wire'] .orb-wire { display: inline; }
+
+/* Orbit images: no z-index on the layer, so they interleave with the stage (z 2). */
+.orb-orbits { position: absolute; inset: 0; }
+.orb-orbit {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  display: block;
+  border-radius: 12px;
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+  will-change: transform, opacity;
 }
 
 /* --------------------------------------------------------------------- HUD */
@@ -284,10 +413,15 @@ body::after {
   padding-top: 3px;
 }
 
-.log-user .log-text { opacity: 0.52; }
+/* A tight dark shadow under both lines: at the window's smallest sizes the
+   transcript sits over the bright orb, and neon on neon does not read. */
+.log-user .log-text {
+  opacity: 0.62;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.85), 0 0 8px rgb(0 0 0 / 0.6);
+}
 .log-jarvis .log-text {
-  color: #eaf9ff;
-  text-shadow: 0 0 26px color-mix(in srgb, var(--accent) 45%, transparent);
+  color: #f4f2ff;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.8), 0 0 26px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 /* Live partial transcript while listening */
@@ -803,21 +937,63 @@ kbd {
   z-index: 7;
   display: grid;
   place-items: center;
-  background: radial-gradient(ellipse at center, #04121c 0%, #01060c 70%);
+  background: radial-gradient(ellipse at center, #120d2e 0%, var(--bg) 68%);
   border: 0;
   cursor: pointer;
   font-family: inherit;
-  color: #4fd6ff;
+  color: #f4f2ff;
 }
 
-.ignition-ring {
+/* The pop palette in waiting: a soft two-tone glow, a gradient ring cut into
+   arcs, six dots in the boot wordmark's colours. All motion is anime.js
+   (Ignition.tsx); none of it runs under reduced motion. */
+.ign-glow {
   position: absolute;
-  width: 240px;
-  height: 240px;
-  border: 1px solid rgba(79, 214, 255, 0.28);
-  border-top-color: rgba(79, 214, 255, 0.9);
+  width: 420px;
+  height: 420px;
   border-radius: 50%;
+  background: radial-gradient(circle, rgb(240 64 255 / 0.22) 0%, rgb(0 229 255 / 0.12) 42%, transparent 70%);
+  opacity: 0.7;
 }
+/* The ring's mask clips everything outside its 7px band, its own glow and
+   outline included, so both live on this unmasked, unrotated wrapper. */
+.ign-ringwrap {
+  position: absolute;
+  width: 250px;
+  height: 250px;
+  border-radius: 50%;
+  box-shadow: 0 0 14px rgb(240 64 255 / 0.32), inset 0 0 14px rgb(0 229 255 / 0.18);
+}
+.ign-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, #f040ff, #00e5ff 25%, transparent 25% 30%, #22ff8a 30%, #ffd000 55%, transparent 55% 60%, #ff3d8b 60%, #9b5cff 88%, transparent 88%);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 7px), #000 calc(100% - 6px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 7px), #000 calc(100% - 6px));
+  will-change: transform; /* the spin stays on the compositor */
+}
+.ign-dots { position: absolute; width: 0; height: 0; }
+.ign-arm { position: absolute; left: -7px; top: -7px; width: 14px; height: 14px; }
+.ign-dot {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--c);
+  box-shadow: 0 0 14px var(--c);
+}
+/* text-indent is inherited and every inline-block indents its own first line:
+   only .ignition-word may balance the trailing letter-space, or each wrapper
+   adds another gap before its letter. */
+.ign-char { display: inline-block; text-indent: 0; color: var(--c); text-shadow: 0 0 18px var(--c); }
+.ign-hop { display: inline-block; text-indent: 0; }
+.ign-dot.c0, .ign-char.c0 { --c: #f040ff; }
+.ign-dot.c1, .ign-char.c1 { --c: #00e5ff; }
+.ign-dot.c2, .ign-char.c2 { --c: #22ff8a; }
+.ign-dot.c3, .ign-char.c3 { --c: #ffd000; }
+.ign-dot.c4, .ign-char.c4 { --c: #ff3d8b; }
+.ign-dot.c5, .ign-char.c5 { --c: #9b5cff; }
 
 .ignition-label {
   display: flex;
@@ -827,10 +1003,11 @@ kbd {
 }
 
 .ignition-word {
-  font-size: 15px;
-  letter-spacing: 0.52em;
-  text-indent: 0.52em; /* balance the trailing letter-space */
-  text-shadow: 0 0 30px rgba(79, 214, 255, 0.7);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.42em;
+  text-indent: 0.42em; /* balance the trailing letter-space */
+  white-space: pre;
 }
 
 .ignition-sub {
@@ -840,170 +1017,88 @@ kbd {
   text-transform: uppercase;
 }
 
-.ignition:hover .ignition-word {
-  text-shadow: 0 0 44px rgba(79, 214, 255, 1);
-}
+.ignition:hover .ign-char { text-shadow: 0 0 30px var(--c); }
+.ignition:focus-visible .ign-ringwrap { outline: 2px solid #f4f2ff; outline-offset: 10px; }
 
 /* ------------------------------------------------------------------- boot */
-
+/* Replaces lines 847-1006 (from the boot banner through .boot-r-v, incl. the
+   bootBlink / bootLogIn keyframes). Keep the @media (max-width: 900px) block
+   that follows. Opaque around the edges from the first frame (no HUD flash),
+   clear in the middle where the scene assembles the live orb. */
 .boot {
   position: fixed;
   inset: 0;
   z-index: 6;
-  background: var(--bg);
-  color: var(--accent);
-  overflow: hidden;
+  pointer-events: none;
+  color: var(--interface);
+  font-family: 'JetBrains Mono', monospace;
+  background: radial-gradient(circle at 50% 50%, transparent 0 31vmin,
+    color-mix(in srgb, var(--bg) 94%, transparent) 46vmin, var(--bg) 72vmin);
 }
-
-/* -- beat 1: the status bar -------------------------------------------- */
-
-.boot-bar {
+.boot-status {
   position: absolute;
-  top: 12%;
+  top: 11%;
   left: 0;
   right: 0;
-  padding: 0 min(9vw, 140px);
-  transition: opacity 0.6s ease, filter 0.6s ease;
+  min-height: 1.4em;
+  text-align: center;
+  font-size: 11px;
+  letter-spacing: 0.38em;
+  text-indent: 0.38em;
+  opacity: 0.85;
 }
-.boot-bar-dim { opacity: 0.28; filter: blur(0.6px); }
-
-.boot-bar-frame {
-  position: relative;
-  border-top: 1.5px solid var(--accent);
-  border-bottom: 1.5px solid var(--accent);
-  padding: 14px 26px 12px;
-  clip-path: polygon(3% 0, 97% 0, 100% 42%, 97% 100%, 3% 100%, 0 42%);
-  box-shadow:
-    inset 0 0 40px color-mix(in srgb, var(--accent) 12%, transparent),
-    0 0 30px color-mix(in srgb, var(--accent) 18%, transparent);
-}
-
-.boot-bar-title {
-  display: inline-flex;
-  align-items: center;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: clamp(18px, 3.4vw, 40px);
-  font-weight: 300;
-  letter-spacing: 0.14em;
-  color: #eafcff;
-  text-shadow: 0 0 26px color-mix(in srgb, var(--accent) 60%, transparent);
-}
-.boot-dots { opacity: 0.6; margin: 0 0.2em; }
-.boot-cursor {
-  display: inline-block;
-  width: 0.6em;
-  height: 1.05em;
-  margin-left: 0.15em;
-  background: var(--accent);
-  animation: bootBlink 0.7s steps(1) infinite;
-}
-@keyframes bootBlink { 50% { opacity: 0 } }
-
-.boot-seg { display: flex; gap: 3px; margin-top: 12px; }
-.boot-seg-cell {
-  flex: 1;
-  height: 12px;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  transition: background 0.12s ease, box-shadow 0.12s ease;
-}
-.boot-seg-cell[data-on='1'] {
-  background: var(--accent);
-  box-shadow: 0 0 10px var(--accent);
-}
-
-.boot-log {
-  margin-top: 14px;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  line-height: 1.9;
-  letter-spacing: 0.06em;
-  opacity: 0.6;
-}
-.boot-log-line { animation: bootLogIn 0.25s ease both; }
-.boot-log-line::before { content: '\203a  '; opacity: 0.5; }
-@keyframes bootLogIn { from { opacity: 0; transform: translateX(-8px) } }
-
-/* -- beats 2-4: the centre stage --------------------------------------- */
-
-.boot-stage {
+.boot-word {
   position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
+  top: calc(50% + 34vmin);
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-family: 'Chakra Petch', system-ui, sans-serif;
+  font-weight: 600;
+  font-size: clamp(16px, 3.1vmin, 34px);
+  line-height: 1;
+  letter-spacing: 0.5em;
+  text-indent: 0.5em;
 }
-.boot-rings,
-.boot-suit,
-.boot-reactor {
-  width: min(58vmin, 520px);
-  height: min(58vmin, 520px);
-  overflow: visible;
+.boot-char {
+  display: inline-block;
+  text-indent: 0; /* the word's indent balances its letter-space once, not per letter */
+  opacity: 0;
+  color: var(--c);
+  text-shadow: 0 0 18px color-mix(in srgb, var(--c) 70%, transparent);
+  will-change: transform, opacity;
 }
-
-.boot-ring {
-  fill: none;
-  stroke: var(--accent);
-  opacity: 0.8;
-  transform-box: fill-box;
-  transform-origin: center;
-  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 50%, transparent));
+.boot-char.c0 { --c: #f040ff; }
+.boot-char.c1 { --c: #00e5ff; }
+.boot-char.c2 { --c: #22ff8a; }
+.boot-char.c3 { --c: #ffd000; }
+.boot-char.c4 { --c: #ff3d8b; }
+.boot-char.c5 { --c: #9b5cff; }
+.boot-char.cd { --c: #f4f2ff; }
+.boot-bar {
+  position: absolute;
+  top: calc(50% + 34vmin + clamp(26px, 5vmin, 54px));
+  left: 50%;
+  width: min(30vmin, 320px);
+  height: 2px;
+  margin-left: calc(min(30vmin, 320px) / -2);
+  border-radius: 2px;
+  transform: scaleX(0);
+  transform-origin: left center;
+  background: linear-gradient(90deg, #4d6bff, #9b5cff, #f040ff, #ff3d8b, #ffd000, #22ff8a, #00e5ff);
 }
-.boot-name {
-  fill: #eafcff;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 20px;
-  text-anchor: middle;
-  dominant-baseline: middle;
-}
-
-.boot-wire {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 1.4;
-  opacity: 0.9;
-  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 55%, transparent));
-}
-.boot-wire-dim { opacity: 0.4; stroke-width: 1; }
-.boot-suit-fig { filter: drop-shadow(0 0 8px color-mix(in srgb, var(--accent) 40%, transparent)); }
-.boot-tag {
-  fill: var(--accent);
+.boot-note {
+  position: absolute;
+  top: calc(50% + 34vmin + clamp(38px, 7vmin, 72px));
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 10px;
+  letter-spacing: 0.24em;
   opacity: 0.55;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 9px;
-  letter-spacing: 0.14em;
-  text-anchor: middle;
 }
 
-.boot-r-seg {
-  stroke: color-mix(in srgb, var(--accent) 30%, transparent);
-  stroke-width: 8;
-}
-.boot-r-on { stroke: #dffbff; filter: drop-shadow(0 0 8px var(--accent)); }
-.boot-r-ring {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 2;
-  opacity: calc(0.3 + var(--glow) * 0.6);
-}
-.boot-r-ring-in { stroke-width: 1.5; opacity: calc(0.2 + var(--glow) * 0.5); }
-.boot-r-tri {
-  fill: color-mix(in srgb, var(--accent) calc(var(--glow) * 45%), transparent);
-  stroke: #eafcff;
-  stroke-width: 3;
-  stroke-linejoin: round;
-  filter: drop-shadow(0 0 calc(var(--glow) * 26px) var(--accent));
-}
-.boot-r-tri-in {
-  fill: color-mix(in srgb, #eafcff calc(var(--glow) * 60%), transparent);
-  stroke: none;
-}
-.boot-r-v {
-  fill: none;
-  stroke: #05161a;
-  stroke-width: 3.5;
-  stroke-linejoin: round;
-  stroke-linecap: round;
-  opacity: var(--glow);
-}
+/* .fx-wave (line ~1376): the orb is now exactly centred */
 
 @media (max-width: 900px) {
   .hud-top { padding: 0 46px; }
@@ -1016,7 +1111,7 @@ kbd {
    Instrument layer
 
    The graduated rings, gauges and reticles that make the reactor read as a
-   cockpit instrument rather than a glowing ball. Sits above the 3D scene
+   cockpit instrument rather than a glowing ball. Sits above the orb scene
    (z 1) and below the HUD chrome (z 4), so text and panels always win.
 
    Everything animates with transform only, on its own compositor layer, and
@@ -1179,7 +1274,7 @@ kbd {
 
    Thin shards raking across the frame at a tilt while a tool runs. Everything
    here is transform and opacity so the whole sweep stays on the compositor and
-   never touches layout, which matters because it plays over a live 3D scene.
+   never touches layout, which matters because it plays over the animated orb.
 
    The band is inset from the top and bottom of the frame rather than filling
    it: the header and the transcript both have to stay legible through this,
@@ -1373,7 +1468,7 @@ kbd {
    reads as a bug rather than as an effect. */
 .fx-wave {
   position: absolute;
-  top: calc(50% - 2vh);
+  top: 50%;
   left: 50%;
   width: 40vmin;
   height: 40vmin;
@@ -1442,7 +1537,7 @@ kbd {
 /* shake ------------------------------------------------------------------- */
 
 /* Applied to the HUD root by Effects.tsx for the duration, so the chrome takes
-   the hit as one body — the 3D scene is a separate layer and keeps still,
+   the hit as one body — the orb scene is a separate layer and keeps still,
    which is what sells it as the instruments being knocked rather than the
    world moving. */
 .hud.fx-shaking {
@@ -1868,22 +1963,6 @@ kbd {
 
 @media (prefers-reduced-motion: reduce) {
   .hands-live::before { animation: none }
-}
-
-/* Spun in CSS, deliberately. Under framer this was an infinitely repeating
-   animation, and AnimatePresence will not unmount a subtree whose animations
-   never end — which left the whole ignition overlay on top of the interface
-   for the entire session, swallowing every click and every pinch. */
-.ignition-ring { animation: ignitionSpin 18s linear infinite }
-
-@keyframes ignitionSpin {
-  from { transform: rotate(0deg) }
-  to   { transform: rotate(360deg) }
-}
-
-
-@media (prefers-reduced-motion: reduce) {
-  .ignition-ring { animation: none }
 }
 
 /* The live camera inside a blade. Mirrored, because a person expects their own

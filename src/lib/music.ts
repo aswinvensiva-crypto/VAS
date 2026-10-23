@@ -124,13 +124,20 @@ export function enable() {
 }
 
 /**
+ * True from playBoot until the boot sequence hands over to the live orb. The
+ * swell outlasts the boot (17 s of music against a 3.6 s sequence), and once
+ * JARVIS is listening it is just music playing under him like any other.
+ */
+let booting = false
+
+/**
  * The level a cue should actually be at right now. The boot swell is exempt
- * from ducking: it is a scripted one-shot with its own dissolve already
- * written, and pulling it down mid-flight reads as a fault rather than as
- * headroom being made.
+ * from ducking while the boot sequence is still the show: it is a scripted
+ * one-shot with its own dissolve already written, and pulling it down
+ * mid-flight reads as a fault rather than as headroom being made.
  */
 function level(cue: Cue): number {
-  return ducked && cue !== 'boot-music' ? want[cue] * DUCK : want[cue]
+  return ducked && !(cue === 'boot-music' && booting) ? want[cue] * DUCK : want[cue]
 }
 
 function fadeTo(cue: Cue, to: number, ms: number) {
@@ -168,6 +175,7 @@ export function playBoot() {
   const t = track('boot-music')
   if (!t) return
   t.el.currentTime = 0
+  booting = true
   // In fast so the start-up sound lands with the first beat of the boot
   // sequence rather than easing in under it.
   set('boot-music', LEVEL['boot-music'], 120)
@@ -236,13 +244,23 @@ export function working(on: boolean) {
   set('work', on ? LEVEL.work : 0, on ? 900 : 1400)
 }
 
+/** The boot sequence is over: the rest of the swell ducks under the voice from now on. */
+export function endBoot() {
+  if (!booting) return
+  booting = false
+  if (ducked && tracks.has('boot-music')) fadeTo('boot-music', level('boot-music'), 250)
+}
+
 /** Pull the bed down while JARVIS speaks so the voice stays clear. */
 export function duck(on: boolean) {
   if (ducked === on) return
   ducked = on
   // Down quickly, back up slowly: the drop has to be out of the way before the
-  // first syllable, but a fast recovery is audible as a swell.
-  ;(['ambient', 'work'] as Cue[]).forEach((c) => {
+  // first syllable, but a fast recovery is audible as a swell. The boot swell
+  // joins in only after endBoot(): re-aiming it earlier would cut its own
+  // dissolve short.
+  ALL.forEach((c) => {
+    if (c === 'boot-music' && booting) return
     if (tracks.has(c)) fadeTo(c, level(c), on ? 250 : 900)
   })
 }

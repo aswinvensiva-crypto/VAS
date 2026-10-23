@@ -170,7 +170,7 @@ export function Hud() {
 
   useEffect(() => {
     // The ground has to be set on the document, not painted here: the HUD sits
-    // above the 3D scene, so a background drawn inside it would cover the
+    // above the reactor scene, so a background drawn inside it would cover the
     // reactor rather than sit behind it. --bg is what html, body, #root and the
     // boot screen all pin themselves to.
     const root = document.documentElement

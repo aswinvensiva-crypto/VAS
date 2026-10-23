@@ -1,205 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Canvas, useFrame } from '@react-three/fiber'
-import {
-  EffectComposer,
-  Bloom,
-  ChromaticAberration,
-  Vignette,
-  Noise,
-} from '@react-three/postprocessing'
-import { BlendFunction } from 'postprocessing'
-import * as THREE from 'three'
-import { Core } from './Core'
-import { Particles } from './Particles'
-import { Orbits } from './Orbits'
-import { useStore, phaseColor, accentFor, type Phase } from '../store'
+import { useEffect, useRef, useState } from 'react'
+import { createScope, engine } from 'animejs'
 import { desktop } from '../lib/desktop'
-
-/** Rings spin harder while JARVIS is working — reads as effort. */
-const spinFor: Record<Phase, number> = {
-  offline: 0.08, // barely turning — the machine is off
-  boot: 3.2,
-  dormant: 0.25,
-  waking: 4.5,
-  listening: 1.1,
-  thinking: 2.8,
-  tooling: 3.6,
-  speaking: 1.4,
-  confirming: 0.6,
-}
-
-/**
- * Surface displacement amplitude. Both states where nothing is happening get
- * the calm figure: 'offline' is the quietest moment in the whole piece — the
- * reactor hasn't been powered on yet — so it must not be the most agitated
- * thing on screen.
- */
-/*
- * Much lower than they were. At 0.13/0.26 on a unit sphere the displacement is
- * a quarter of the radius, which is not a reactor breathing — it is a potato.
- * The reference core is a clean circle whose surface only shimmers; the drama
- * belongs to the instrument rings around it, not to the silhouette.
- */
-const AMP_CALM = 0.035
-const AMP_LIVE = 0.085
-
-/**
- * Everything the three children animate from, in one mutable object.
- *
- * These used to be render-time props, which had two consequences. The scene
- * subscribed to mic level, so the entire r3f tree reconciled sixty times a
- * second for numbers that never leave useFrame; and because they were only
- * delivered on a re-render, they were delivered late or — before the analyser
- * starts and `level` is a constant zero — not at all, which is why the ignition
- * screen never picked up its own spin rate.
- *
- * Nothing here belongs in React state. The scene is updated by mutation and
- * React only ever mounts it: Rig writes this object once per frame, the
- * children read it in their own useFrame. Children subscribe to the frame loop
- * before their parent does, so they are reading the previous frame's values —
- * one frame of lag on quantities that are all lerped anyway, and invisible.
- */
-export type Drive = {
-  color: THREE.Color
-  /** 0..1 smoothed loudness, with an idle breath under it. */
-  level: number
-  /** Rotation multiplier for the drifting dust. */
-  spin: number
-  /** Target displacement amplitude for the core surface. */
-  amp: number
-  /** 0..1 power-up reveal — the ring assembles outwards from the centre. */
-  open: number
-  /**
-   * The reactor slice of the ui state, already resolved and smoothed.
-   *
-   * Everything here is a no-op at UI_DEFAULTS: colour follows the phase exactly
-   * as it always did, and the three multipliers sit at one.
-   */
-  reactor: {
-    /** ui.reactor.color if set, otherwise the accent. */
-    color: THREE.Color
-    scale: number
-    intensity: number
-    /** Multiplier on the ring's own rotation rate. */
-    spin: number
-    /** 0 ring, 1 sphere, 2 wire — a number because it ends up in a uniform. */
-    style: number
-    visible: boolean
-  }
-}
-
-/**
- * A colour target that only re-parses when the string actually changes.
- *
- * The colours in the ui slice are arbitrary CSS written by JARVIS, and
- * THREE.Color.set logs a warning for anything it cannot parse. Setting one
- * unconditionally per frame turns a single typo into sixty console lines a
- * second, which drowns everything else out during a demo.
- */
-type Tint = { key: string; color: THREE.Color }
-
-function aim(tint: Tint, css: string): THREE.Color {
-  if (tint.key !== css) {
-    tint.key = css
-    tint.color.set(css)
-  }
-  return tint.color
-}
-
-const STYLE_INDEX = { ring: 0, sphere: 1, wire: 2 } as const
-
-function Rig() {
-  const drive = useMemo<Drive>(
-    () => ({
-      color: new THREE.Color(phaseColor.offline),
-      level: 0,
-      spin: spinFor.offline,
-      amp: AMP_CALM,
-      open: 0,
-      reactor: {
-        color: new THREE.Color(phaseColor.offline),
-        scale: 1,
-        intensity: 1,
-        spin: 1,
-        style: STYLE_INDEX.ring,
-        visible: true,
-      },
-    }),
-    [],
-  )
-  const target = useMemo<Tint>(() => ({ key: '', color: new THREE.Color() }), [])
-  const reactorTarget = useMemo<Tint>(
-    () => ({ key: '', color: new THREE.Color() }),
-    [],
-  )
-
-  useFrame((state, dt) => {
-    // Read imperatively rather than subscribing — see the note on Drive.
-    const { phase, level, ui } = useStore.getState()
-
-    // accentFor owns the accent -> palette -> phase resolution order. The scene
-    // asking the store for the answer rather than working it out again is what
-    // keeps the orb and the HUD from ever disagreeing about the colour.
-    const accent = accentFor(phase, ui)
-    drive.color.lerp(aim(target, accent), Math.min(1, dt * 2.5))
-
-    const r = ui.reactor
-    drive.reactor.color.lerp(
-      aim(reactorTarget, r.color ?? accent),
-      Math.min(1, dt * 2.5),
-    )
-    // Smoothed rather than assigned, so "make it twice the size" grows into
-    // place instead of snapping. The style is the exception: it is a mode, and
-    // easing between two of them would drag the picture through the third.
-    const k = Math.min(1, dt * 5)
-    drive.reactor.scale += (r.scale - drive.reactor.scale) * k
-    drive.reactor.intensity += (r.intensity - drive.reactor.intensity) * k
-    drive.reactor.spin += (r.spin - drive.reactor.spin) * k
-    drive.reactor.style = STYLE_INDEX[r.style] ?? STYLE_INDEX.ring
-    drive.reactor.visible = r.visible
-
-    drive.spin += (spinFor[phase] - drive.spin) * Math.min(1, dt * 2)
-    drive.amp = phase === 'dormant' || phase === 'offline' ? AMP_CALM : AMP_LIVE
-    // Held shut until the reactor is powered on, so the ring builds itself out
-    // of the centre on the ignition click rather than simply appearing.
-    drive.open = phase === 'offline' ? 0.28 : phase === 'boot' ? 0.7 : 1.6
-
-    // Idle breathing so the orb is never completely still.
-    const idle = phase === 'offline' ? 0.02 : phase === 'dormant' ? 0.05 : 0.12
-    const breathe =
-      (Math.sin(state.clock.elapsedTime * 0.9) * 0.5 + 0.5) * idle
-    const want = Math.max(level, breathe)
-    drive.level += (want - drive.level) * Math.min(1, dt * 9)
-
-    // Slow drift on the camera keeps handheld-ish life in the shot.
-    const t = state.clock.elapsedTime
-    state.camera.position.x = Math.sin(t * 0.13) * 0.35
-    state.camera.position.y = Math.cos(t * 0.17) * 0.22
-    state.camera.lookAt(0, 0, 0)
-  })
-
-  // Nothing in here is lit: both the core and the dust are raw ShaderMaterials,
-  // which do not read the light list. The scene therefore has no lights at all.
-  //
-  // The tilted gyro rings that used to sit here are gone. Steeply tilted arcs
-  // crossing in front of a complete circle do not read as depth — they read as
-  // scratches on the lens, and as broken circles in a design whose whole
-  // subject is one unbroken one.
-  return (
-    <>
-      <Core drive={drive} />
-      <Particles drive={drive} />
-      <Orbits />
-    </>
-  )
-}
+import { startReactor, BLOBS, CORE_R, WIRE, PIP_COUNT, type ReactorEls } from './reactor'
+import { startOrbits } from './orbits'
 
 /**
  * Whether the window can be seen. The desktop app keeps Chromium's background
  * throttling off so the microphone never stalls, which also means a hidden
- * window would go on rendering this scene — bloom, 4,000 particles — at full
- * rate, holding the GPU process at several hundred MB for nothing. In a
- * browser tab Chromium throttles hidden pages itself.
+ * window would go on animating at full rate. In a browser tab anime pauses
+ * itself on document.hidden.
  */
 function useWindowShown(): boolean {
   const [shown, setShown] = useState(() => !desktop?.startHidden)
@@ -207,53 +16,145 @@ function useWindowShown(): boolean {
   return shown
 }
 
+/**
+ * One global anime engine drives every anime.js animation in the app.
+ * Electron (backgroundThrottling off) never reports the document hidden, so
+ * anime's pauseOnDocumentHidden never fires there; this does its job.
+ *
+ * Verified in 4.5.0 engine.js / timer.js: engine.pause() returns early while
+ * the engine is idle (reqId 0), and any later play()/resume()/animatable
+ * setter calls engine.wake(), which checks only useDefaultMainLoop, never
+ * `paused`. So the flag is what stops a new rAF while hidden. Forcing
+ * paused = true before resume() makes resume() re-base every live clock
+ * (resetTime), so nothing jumps forward after a long stay in the tray.
+ */
+function runEngine(on: boolean) {
+  if (on) {
+    engine.useDefaultMainLoop = true
+    engine.paused = true
+    engine.resume()
+  } else {
+    engine.useDefaultMainLoop = false
+    engine.pause()
+  }
+}
+
+/** 72-tick bezel; every sixth tick is long. viewBox units (-100..100). */
+const TICKS = (() => {
+  let p = ''
+  for (let i = 0; i < 72; i++) {
+    const a = (i / 72) * Math.PI * 2
+    const r0 = i % 6 === 0 ? 87.5 : 90
+    const c = Math.cos(a)
+    const s = Math.sin(a)
+    p += `M${(c * r0).toFixed(2)} ${(s * r0).toFixed(2)}L${(c * 94).toFixed(2)} ${(s * 94).toFixed(2)}`
+  }
+  return p
+})()
+
 export function Scene() {
   const shown = useWindowShown()
-  return (
-    <Canvas
-      className="scene"
-      camera={{ position: [0, 0, 6.2], fov: 45 }}
-      gl={{ antialias: true, alpha: true }}
-      // 1.5, not 2: the bloom pass's buffers grow with the square of it, and
-      // a soft-edged glow gains nothing visible from the last half.
-      dpr={[1, 1.5]}
-      frameloop={shown ? 'always' : 'never'}
-    >
-      <Rig />
-      {/*
-        multisampling={0} on purpose. The default is 8, which allocates a
-        half-float MSAA target — at dpr 2 that is a 3200x1800 buffer — and there
-        is not one polygon edge in this scene for it to smooth: everything is
-        additive blobs, point sprites and lines, all of which are already
-        soft-edged by their own falloff and then blurred again by bloom.
+  const root = useRef<HTMLDivElement>(null)
 
-        Tone mapping is also deliberate, if less obviously so. EffectComposer
-        forces gl.toneMapping to NoToneMapping while it is mounted (there is no
-        prop for it), so the additive output clips instead of rolling off. That
-        hard clip to white is the neon look this piece wants — the sweep and the
-        rim are meant to blow out. If you ever want the filmic roll-off back,
-        add a <ToneMapping mode={ToneMappingMode.ACES_FILMIC} /> effect at the
-        end of this chain rather than touching the renderer.
-      */}
-      <EffectComposer multisampling={0}>
-        {/* Bloom is what turns additive lines into "hologram". */}
-        <Bloom
-          intensity={1.15}
-          // A higher threshold keeps the mid-tones intact so the orb doesn't
-          // flatten into a solid white disc.
-          luminanceThreshold={0.22}
-          luminanceSmoothing={0.85}
-          mipmapBlur
-          radius={0.72}
-        />
-        <ChromaticAberration
-          offset={new THREE.Vector2(0.0009, 0.0012)}
-          radialModulation={false}
-          modulationOffset={0}
-        />
-        <Noise opacity={0.035} blendFunction={BlendFunction.OVERLAY} />
-        <Vignette eskil={false} offset={0.22} darkness={0.95} />
-      </EffectComposer>
-    </Canvas>
+  useEffect(() => { runEngine(shown) }, [shown])
+  // Never leave the rest of the app with a stopped engine.
+  useEffect(() => () => runEngine(true), [])
+
+  useEffect(() => {
+    const el = root.current
+    if (!el) return
+    const scope = createScope({ root: el, mediaQueries: { reduce: '(prefers-reduced-motion: reduce)' } })
+    // anime re-runs this constructor whenever the media query flips, reverting
+    // everything registered in it (the timers, animatables, the comet loop) first.
+    scope.add((self) => {
+      const reduce = Boolean(self?.matches.reduce)
+      const one = <T extends Element>(sel: string) => el.querySelector(sel) as T
+      const all = <T extends Element>(sel: string) => Array.from(el.querySelectorAll<T>(sel))
+      const els: ReactorEls = {
+        root: el,
+        stage: one('.orb-stage'),
+        halo: one('.orb-halo'),
+        ringGlow: one('.orb-ringglow'),
+        ring: one('.orb-ring'),
+        ticksSvg: one('.orb-ticks'),
+        ticks: one('.orb-tickmarks'),
+        chase: one('.orb-chase'),
+        chaseArc: one('.orb-chase-arc'),
+        comet: one('.orb-comet'),
+        beacon: one('.orb-beacon'),
+        beaconRing: one('.orb-beacon-ring'),
+        wires: all('.orb-wire'),
+        pips: all('.orb-pip'),
+        pulse: one('.orb-pulse'),
+        core: one('.orb-core'),
+        blobs: all('.orb-blob'),
+        rim: one('.orb-rim'),
+        ripples: all('.orb-ripple'),
+      }
+      const stopReactor = startReactor(els, reduce)
+      const stopOrbits = startOrbits(one<HTMLElement>('.orb-orbits'), reduce)
+      return () => {
+        stopOrbits()
+        stopReactor()
+      }
+    })
+    return () => scope.revert()
+  }, [])
+
+  // Every prop below is constant: a re-render (visibility only) can never
+  // overwrite the imperatively written transforms, data-style, dasharrays or
+  // the children of .orb-orbits.
+  return (
+    <div className="scene" ref={root} aria-hidden="true">
+      <div className="orb-stage">
+        <div className="orb-halo" />
+        <div className="orb-ringglow" />
+        <div className="orb-ring" />
+        <svg className="orb-ticks" viewBox="-100 -100 200 200">
+          <path className="orb-tickmarks" d={TICKS} />
+          <g className="orb-chase"><circle className="orb-chase-arc" r="91" /></g>
+        </svg>
+        <svg className="orb-lines" viewBox="-100 -100 200 200">
+          <circle className="orb-comet" r="70" transform="rotate(-90)" />
+          <g className="orb-beacon"><circle className="orb-beacon-ring" r="98" /></g>
+          {WIRE.map((w, i) => (
+            <g key={i} className="orb-wire"><circle className={`w${i}`} r={w.r} strokeDasharray={w.dash} /></g>
+          ))}
+        </svg>
+        <div className="orb-pips">
+          {Array.from({ length: PIP_COUNT }, (_, i) => <div key={i} className={`orb-pip k${i % 3} t${i % 4}`} />)}
+        </div>
+        <div className="orb-pulse">
+          <svg className="orb-goo" viewBox="-100 -100 200 200">
+            <defs>
+              <radialGradient id="vas-fill" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="90" fx="-26" fy="-30">
+                <stop offset="0" className="st-hi" />
+                <stop offset="0.36" className="st-orb" />
+                <stop offset="0.74" className="st-pop" />
+                <stop offset="1" className="st-deep" />
+              </radialGradient>
+              <radialGradient id="vas-gloss">
+                <stop offset="0" stopColor="#fff" stopOpacity="0.95" />
+                <stop offset="1" stopColor="#fff" stopOpacity="0" />
+              </radialGradient>
+              {/* Metaball: blur, then an alpha threshold, then the crisp source composited atop. */}
+              <filter id="vas-goo" x="-30%" y="-30%" width="160%" height="160%" colorInterpolationFilters="sRGB">
+                <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="blur" />
+                <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 20 -8" result="goo" />
+                <feComposite in="SourceGraphic" in2="goo" operator="atop" />
+              </filter>
+            </defs>
+            <g filter="url(#vas-goo)">
+              <circle className="orb-core" r={CORE_R} fill="url(#vas-fill)" />
+              {BLOBS.map((b, i) => <circle key={i} className="orb-blob" r={b.r} fill="url(#vas-fill)" />)}
+            </g>
+            <ellipse className="orb-gloss" cx="-22" cy="-28" rx="26" ry="15" transform="rotate(-32 -22 -28)" fill="url(#vas-gloss)" />
+            <circle className="orb-rim" r="70" />
+          </svg>
+        </div>
+        {[0, 1, 2, 3].map((i) => <div key={i} className="orb-ripple" />)}
+      </div>
+      <div className="orb-orbits" />
+    </div>
   )
 }

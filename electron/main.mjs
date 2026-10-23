@@ -149,7 +149,7 @@ function createWindow() {
 
   // The bridge asks before using the camera while nobody can see the window.
   // Told to the bridge (the camera asks first while hidden) and to the face,
-  // which stops drawing its 3D scene when nobody can see it: with
+  // which stops animating the reactor when nobody can see it: with
   // backgroundThrottling off for the microphone's sake, Chromium would
   // otherwise render it at full rate in the tray.
   const reportVisibility = () => {

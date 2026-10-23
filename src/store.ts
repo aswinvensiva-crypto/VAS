@@ -437,26 +437,26 @@ export const useStore = create<State>((set) => ({
     }),
 }))
 
-/** Colour identity per phase — shared by the 3D scene and the 2D HUD. */
+/** Colour identity per phase — shared by the reactor and the 2D HUD. */
 export const phaseColor: Record<Phase, string> = {
-  offline: '#0d4a4a',
-  boot: '#17b3b3',
-  dormant: '#12908f',
-  waking: '#5cf2ef',
-  listening: '#19d8d2',
-  thinking: '#f0a93c',
-  tooling: '#a97bff',
-  speaking: '#3ef2a8',
-  confirming: '#ffc933',
+  offline: '#4b4f78', // dim slate: powered off
+  boot: '#5ef6ff', // ice cyan
+  dormant: '#4d6bff', // electric blue
+  waking: '#f040ff', // magenta
+  listening: '#00e5ff', // cyan (= --interface)
+  thinking: '#9b5cff', // violet
+  tooling: '#ff3d8b', // hot pink
+  speaking: '#22ff8a', // spring green
+  confirming: '#ffd000', // sunshine yellow: the only warm hue, "asking you a yes/no"
 }
 
 /**
  * What colour is the interface right now.
  *
- * The 3D scene and the 2D HUD have to answer this identically — a reactor
+ * The reactor scene and the HUD have to answer this identically — a reactor
  * glowing one colour behind a rail glowing another is the single most obvious
  * way this comes apart on camera — so the resolution order lives here once
- * instead of being reimplemented either side of the canvas boundary. A blanket
+ * instead of being reimplemented on either side. A blanket
  * accent wins over a per-phase override, which wins over the built-in map.
  */
 export function accentFor(phase: Phase, ui: UiState): string {

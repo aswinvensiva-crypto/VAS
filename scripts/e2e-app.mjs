@@ -16,7 +16,7 @@
  *   npm run e2e:app -- --memory   # also: the memory check (needs the voice models)
  *
  * The memory check starts the app hidden, has the bridge transcribe a few
- * spoken clips so Whisper loads, and then checks that the 3D scene is not
+ * spoken clips so Whisper loads, and then checks that the reactor is not
  * drawing while hidden and that Whisper is let go once it has been idle.
  *
  * It drives the window over the Chrome DevTools protocol on a loopback port,
@@ -287,7 +287,7 @@ async function memoryRun() {
     await sleep(8_000)
     const before = memoryByKind()
     check(
-      'hidden, the 3D scene is not drawn',
+      'hidden, the reactor is not drawn',
       (before['gpu-process'] ?? 0) < 350,
       `graphics ${before['gpu-process'] ?? 0} MB`,
     )

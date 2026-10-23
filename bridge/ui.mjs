@@ -98,6 +98,7 @@ const PHASE_NOTES = {
   thinking: 'you are composing an answer',
   tooling: 'a tool is running',
   speaking: 'you are reading the answer back',
+  confirming: 'you are waiting on the user to say yes or no',
 }
 
 const PHASES = Object.keys(PHASE_NOTES)
@@ -136,8 +137,9 @@ const themeSchema = {
 const THEME_DESCRIPTION = `Retint the whole interface.
 
 The HUD is drawn in one colour identity that normally follows your state: cyan
-while listening, amber while thinking, violet while a tool runs, green while you
-speak. An accent overrides that everywhere, at once.
+while listening, violet while thinking, hot pink while a tool runs, green while
+you speak, sunshine yellow while you wait on a yes or no. An accent overrides
+that everywhere, at once.
 
 Use it when the colour MEANS something. Red because a check came back bad.
 Amber because you are waiting on something out of your control. A colour pulled

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { Scene } from './scene/Scene'
+import { BOOT_MS } from './scene/bootTiming'
 import { Hud } from './ui/Hud'
 import { Boot } from './ui/Boot'
 import { Ignition } from './ui/Ignition'
@@ -725,11 +726,10 @@ export default function App() {
       }, 200)
     }
 
-    // Long enough for the four-beat start-up sequence in Boot.tsx to play —
-    // status bar, rings, suit schematic, reactor power-up — before the live
-    // interface takes over. Kept a touch under the boot cue so the music is
-    // still rising as the reactor lands.
-    await new Promise((r) => setTimeout(r, quiet ? 0 : 9200)) // boot sequence
+    // Long enough for the orb to assemble and pop (src/scene/bootTiming.ts). The
+    // overlay then holds its last frame through whatever start-up still awaits
+    // below, and dissolves onto the live orb when the phase becomes 'dormant'.
+    await new Promise((r) => setTimeout(r, quiet ? 0 : BOOT_MS)) // 3600 ms
     await warming
     store.getState().setConnected(connectedLabels())
     // The preferred voice is a setting (config.json), read before the first word.
@@ -766,6 +766,8 @@ export default function App() {
       questionEnd: () => questionEnd.current,
     })
 
+    // The boot swell plays on past the sequence; from here it ducks under the voice.
+    music.endBoot()
     store.getState().setPhase('dormant')
   }
 

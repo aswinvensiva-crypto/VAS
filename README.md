@@ -247,7 +247,7 @@ can have — Node.js and Chrome. That's the whole list.
 - **Google Chrome or Microsoft Edge**, in a **real browser window** — not an
   embedded preview pane. Preview panes (including the one inside editors and
   Claude Code) block microphone access, so the page loads and looks right but
-  never hears you. JARVIS also needs WebGL, which these browsers provide.
+  never hears you.
 - **Optional: an ElevenLabs API key** — a good add-on, not a requirement. It
   gives a better voice and sharper transcription; the free tier is plenty for a
   demo. Without it, everything runs on the browser's own speech.
