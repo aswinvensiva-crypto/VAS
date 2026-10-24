@@ -8,7 +8,7 @@ import { plainFailure, sessionTrouble } from '../../bridge/trouble.mjs'
  * talking to a desktop app.
  */
 test('Claude Code\'s terminal messages become sentences that say what to do', () => {
-  for (const said of ['Not logged in · Please run /login', 'Invalid API key · Please run /login', 'OAuth token has expired']) {
+  for (const said of ['Not logged in · Please run /login', 'Invalid API key · Please run /login', 'OAuth token has expired', 'Failed to authenticate: OAuth session expired and could not be refreshed']) {
     assert.match(plainFailure(said), /isn't signed in on this PC/, said)
   }
   assert.match(plainFailure("You've hit your session limit · resets 3:50am"), /usage limit/)

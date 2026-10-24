@@ -6,7 +6,7 @@
  */
 const CANT_REACH_CLAUDE = [
   [
-    /not logged in|please run \/login|invalid api key|oauth token (has )?expired|authentication[_ ]failed/i,
+    /not logged in|please run \/login|invalid api key|oauth (token|session) (has )?expired|could not be refreshed|failed to authenticate|authentication[_ ]failed/i,
     "I can't reach Claude: Claude Code isn't signed in on this PC. Open a terminal, run claude and sign in, then ask me again. Things I do myself, like opening apps, still work.",
   ],
   [
