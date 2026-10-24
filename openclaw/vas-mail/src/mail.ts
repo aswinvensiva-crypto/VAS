@@ -1,7 +1,7 @@
 import nodemailer from "nodemailer";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
-import { authenticate } from "mailauth";
+
 
 export type MailConfig = {
   user?: string;
@@ -70,18 +70,23 @@ async function withInbox<T>(config: MailConfig, fn: (client: ImapFlow) => Promis
 }
 
 /**
- * Whether the sender is who the From line says, by DMARC — adapted from
- * OpenClaw's extensions/imap/src/sender-gate.ts (MIT). Unknown counts as
- * not verified: a reader is told to be wary, nothing is hidden.
+ * Whether the sender is who the From line says, by DMARC — as Gmail's own
+ * receiving server judged it. Gmail stamps every message it accepts with an
+ * Authentication-Results header from mx.google.com, on top of any the sender
+ * wrote, so only the first one that names Google is believed. (Re-checking
+ * DKIM here meant downloading whole messages, attachments and all, and
+ * hashing them on the Gateway's event loop — it froze the Gateway for over a
+ * minute.) Unknown counts as not verified: a reader is told to be wary,
+ * nothing is hidden.
  */
-async function verified(raw: Buffer): Promise<boolean> {
-  try {
-    const result = await authenticate(raw, { trustReceived: false });
-    return result?.dmarc ? result.dmarc.status?.result === "pass" : false;
-  } catch {
-    return false;
-  }
+export function verifiedByGmail(headers: Buffer | string | undefined): boolean {
+  const text = String(headers ?? "").replace(/\r?\n[ \t]+/g, " ");
+  const first = text.split(/\r?\n/).find((l) => /^authentication-results:\s*mx\.google\.com\b/i.test(l));
+  return Boolean(first && /\bdmarc=pass\b/i.test(first));
 }
+
+/** Read at most this much of a message: the text is what matters, not attachments. */
+const MAX_SOURCE = 1024 * 1024;
 
 export async function listMail(
   config: MailConfig,
@@ -94,7 +99,7 @@ export async function listMail(
     const uids = ((await client.search(query, { uid: true })) || []).slice(-limit).reverse();
     const out = [];
     for (const uid of uids) {
-      const msg = await client.fetchOne(String(uid), { envelope: true, flags: true, source: true }, { uid: true });
+      const msg = await client.fetchOne(String(uid), { envelope: true, flags: true, headers: ["authentication-results"] }, { uid: true });
       if (!msg) continue;
       const sender = msg.envelope?.from?.[0];
       out.push({
@@ -104,7 +109,7 @@ export async function listMail(
         subject: msg.envelope?.subject ?? "",
         date: msg.envelope?.date ? new Date(msg.envelope.date).toISOString() : null,
         unread: !msg.flags?.has("\\Seen"),
-        verified: msg.source ? await verified(msg.source) : false,
+        verified: verifiedByGmail(msg.headers),
       });
     }
     return out;
@@ -113,7 +118,11 @@ export async function listMail(
 
 export async function readMail(config: MailConfig, uid: number) {
   return withInbox(config, async (client) => {
-    const msg = await client.fetchOne(String(uid), { source: true }, { uid: true });
+    const msg = await client.fetchOne(
+      String(uid),
+      { source: { maxLength: MAX_SOURCE }, headers: ["authentication-results"] },
+      { uid: true },
+    );
     if (!msg || !msg.source) throw new ToolInputError("That email is no longer in the inbox.");
     const parsed = await simpleParser(msg.source);
     const sender = parsed.from?.value?.[0];
@@ -125,7 +134,7 @@ export async function readMail(config: MailConfig, uid: number) {
       subject: parsed.subject ?? "",
       date: parsed.date?.toISOString() ?? null,
       text: text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT)}…` : text,
-      verified: await verified(msg.source),
+      verified: verifiedByGmail(msg.headers),
     };
   });
 }

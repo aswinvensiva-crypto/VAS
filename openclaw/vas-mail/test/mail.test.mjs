@@ -51,3 +51,12 @@ test('missing settings and bad addresses are refused in words, before any connec
   await assert.rejects(sendMail(account, { ...msg, to: ['not an address'] }, r.create), /"not an address" isn't an email address/)
   assert.deepEqual(r.opened, [])
 })
+
+test('"verified" is Gmail\'s own DMARC verdict, never one the sender wrote', async () => {
+  const { verifiedByGmail } = await import('../dist/mail.js')
+  assert.equal(verifiedByGmail('Authentication-Results: mx.google.com;\r\n       dkim=pass header.i=@bank.example;\r\n       dmarc=pass (p=REJECT) header.from=bank.example\r\n'), true)
+  assert.equal(verifiedByGmail('Authentication-Results: mx.google.com; spf=softfail; dmarc=fail header.from=bank.example\r\n'), false)
+  // A sender can write its own header; only the one naming Google counts.
+  assert.equal(verifiedByGmail('Authentication-Results: evil.example; dmarc=pass\r\n'), false)
+  assert.equal(verifiedByGmail(undefined), false)
+})
